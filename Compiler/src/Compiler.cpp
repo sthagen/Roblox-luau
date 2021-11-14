@@ -13,7 +13,9 @@
 LUAU_FASTFLAGVARIABLE(LuauPreloadClosures, false)
 LUAU_FASTFLAGVARIABLE(LuauPreloadClosuresFenv, false)
 LUAU_FASTFLAGVARIABLE(LuauPreloadClosuresUpval, false)
+LUAU_FASTFLAGVARIABLE(LuauGenericSpecialGlobals, false)
 LUAU_FASTFLAG(LuauIfElseExpressionBaseSupport)
+LUAU_FASTFLAGVARIABLE(LuauBit32CountBuiltin, false)
 
 namespace Luau
 {
@@ -22,6 +24,7 @@ static const uint32_t kMaxRegisterCount = 255;
 static const uint32_t kMaxUpvalueCount = 200;
 static const uint32_t kMaxLocalCount = 200;
 
+// TODO: Remove with LuauGenericSpecialGlobals
 static const char* kSpecialGlobals[] = {"Game", "Workspace", "_G", "game", "plugin", "script", "shared", "workspace"};
 
 CompileError::CompileError(const Location& location, const std::string& message)
@@ -1277,7 +1280,7 @@ struct Compiler
     {
         const Global* global = globals.find(expr->name);
 
-        return options.optimizationLevel >= 1 && (!global || (!global->written && !global->special));
+        return options.optimizationLevel >= 1 && (!global || (!global->written && !global->writable));
     }
 
     void compileExprIndexName(AstExprIndexName* expr, uint8_t target)
@@ -3447,7 +3450,7 @@ struct Compiler
 
     struct Global
     {
-        bool special = false;
+        bool writable = false;
         bool written = false;
     };
 
@@ -3505,7 +3508,7 @@ struct Compiler
             {
                 Global* g = globals.find(object->name);
 
-                return !g || (!g->special && !g->written) ? Builtin{object->name, expr->index} : Builtin();
+                return !g || (!g->writable && !g->written) ? Builtin{object->name, expr->index} : Builtin();
             }
             else
             {
@@ -3636,6 +3639,10 @@ struct Compiler
                 return LBF_BIT32_RROTATE;
             if (builtin.method == "rshift")
                 return LBF_BIT32_RSHIFT;
+            if (builtin.method == "countlz" && FFlag::LuauBit32CountBuiltin)
+                return LBF_BIT32_COUNTLZ;
+            if (builtin.method == "countrz" && FFlag::LuauBit32CountBuiltin)
+                return LBF_BIT32_COUNTRZ;
         }
 
         if (builtin.object == "string")
@@ -3703,13 +3710,24 @@ void compileOrThrow(BytecodeBuilder& bytecode, AstStatBlock* root, const AstName
 
     Compiler compiler(bytecode, options);
 
-    // since access to some global objects may result in values that change over time, we block table imports
-    for (const char* global : kSpecialGlobals)
+    // since access to some global objects may result in values that change over time, we block imports from non-readonly tables
+    if (FFlag::LuauGenericSpecialGlobals)
     {
-        AstName name = names.get(global);
+        if (AstName name = names.get("_G"); name.value)
+            compiler.globals[name].writable = true;
 
-        if (name.value)
-            compiler.globals[name].special = true;
+        if (options.mutableGlobals)
+            for (const char** ptr = options.mutableGlobals; *ptr; ++ptr)
+                if (AstName name = names.get(*ptr); name.value)
+                    compiler.globals[name].writable = true;
+    }
+    else
+    {
+        for (const char* global : kSpecialGlobals)
+        {
+            if (AstName name = names.get(global); name.value)
+                compiler.globals[name].writable = true;
+        }
     }
 
     // this visitor traverses the AST to analyze mutability of locals/globals, filling Local::written and Global::written
@@ -3724,7 +3742,7 @@ void compileOrThrow(BytecodeBuilder& bytecode, AstStatBlock* root, const AstName
     }
 
     // this visitor tracks calls to getfenv/setfenv and disables some optimizations when they are found
-    if (FFlag::LuauPreloadClosuresFenv && options.optimizationLevel >= 1)
+    if (FFlag::LuauPreloadClosuresFenv && options.optimizationLevel >= 1 && (names.get("getfenv").value || names.get("setfenv").value))
     {
         Compiler::FenvVisitor fenvVisitor(compiler.getfenvUsed, compiler.setfenvUsed);
         root->visit(&fenvVisitor);
