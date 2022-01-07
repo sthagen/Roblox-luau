@@ -11,6 +11,8 @@ LUAU_FASTFLAG(LuauFixTonumberReturnType)
 
 using namespace Luau;
 
+LUAU_FASTFLAG(LuauUseCommittingTxnLog)
+
 TEST_SUITE_BEGIN("BuiltinTests");
 
 TEST_CASE_FIXTURE(Fixture, "math_things_are_defined")
@@ -444,19 +446,28 @@ TEST_CASE_FIXTURE(Fixture, "os_time_takes_optional_date_table")
     CHECK_EQ(*typeChecker.numberType, *requireType("n3"));
 }
 
-TEST_CASE_FIXTURE(Fixture, "thread_is_a_type")
+// Switch back to TEST_CASE_FIXTURE with regular Fixture when removing the
+// LuauUseCommittingTxnLog flag.
+TEST_CASE("thread_is_a_type")
 {
-    CheckResult result = check(R"(
+    Fixture fix(FFlag::LuauUseCommittingTxnLog);
+
+    CheckResult result = fix.check(R"(
         local co = coroutine.create(function() end)
     )");
 
-    LUAU_REQUIRE_NO_ERRORS(result);
-    CHECK_EQ(*typeChecker.threadType, *requireType("co"));
+    // Replace with LUAU_REQUIRE_NO_ERRORS(result) when using TEST_CASE_FIXTURE.
+    CHECK(result.errors.size() == 0);
+    CHECK_EQ(*fix.typeChecker.threadType, *fix.requireType("co"));
 }
 
-TEST_CASE_FIXTURE(Fixture, "coroutine_resume_anything_goes")
+// Switch back to TEST_CASE_FIXTURE with regular Fixture when removing the
+// LuauUseCommittingTxnLog flag.
+TEST_CASE("coroutine_resume_anything_goes")
 {
-    CheckResult result = check(R"(
+    Fixture fix(FFlag::LuauUseCommittingTxnLog);
+
+    CheckResult result = fix.check(R"(
         local function nifty(x, y)
             print(x, y)
             local z = coroutine.yield(1, 2)
@@ -469,12 +480,17 @@ TEST_CASE_FIXTURE(Fixture, "coroutine_resume_anything_goes")
         local answer = coroutine.resume(co, 3)
     )");
 
-    LUAU_REQUIRE_NO_ERRORS(result);
+    // Replace with LUAU_REQUIRE_NO_ERRORS(result) when using TEST_CASE_FIXTURE.
+    CHECK(result.errors.size() == 0);
 }
 
-TEST_CASE_FIXTURE(Fixture, "coroutine_wrap_anything_goes")
+// Switch back to TEST_CASE_FIXTURE with regular Fixture when removing the
+// LuauUseCommittingTxnLog flag.
+TEST_CASE("coroutine_wrap_anything_goes")
 {
-    CheckResult result = check(R"(
+    Fixture fix(FFlag::LuauUseCommittingTxnLog);
+
+    CheckResult result = fix.check(R"(
         --!nonstrict
         local function nifty(x, y)
             print(x, y)
@@ -488,7 +504,8 @@ TEST_CASE_FIXTURE(Fixture, "coroutine_wrap_anything_goes")
         local answer = f(3)
     )");
 
-    LUAU_REQUIRE_NO_ERRORS(result);
+    // Replace with LUAU_REQUIRE_NO_ERRORS(result) when using TEST_CASE_FIXTURE.
+    CHECK(result.errors.size() == 0);
 }
 
 TEST_CASE_FIXTURE(Fixture, "setmetatable_should_not_mutate_persisted_types")
@@ -798,13 +815,14 @@ TEST_CASE_FIXTURE(Fixture, "string_format_report_all_type_errors_at_correct_posi
 {
     CheckResult result = check(R"(
         ("%s%d%s"):format(1, "hello", true)
+        string.format("%s%d%s", 1, "hello", true)
     )");
 
     TypeId stringType = typeChecker.stringType;
     TypeId numberType = typeChecker.numberType;
     TypeId booleanType = typeChecker.booleanType;
 
-    LUAU_REQUIRE_ERROR_COUNT(3, result);
+    LUAU_REQUIRE_ERROR_COUNT(6, result);
 
     CHECK_EQ(Location(Position{1, 26}, Position{1, 27}), result.errors[0].location);
     CHECK_EQ(TypeErrorData(TypeMismatch{stringType, numberType}), result.errors[0].data);
@@ -814,6 +832,15 @@ TEST_CASE_FIXTURE(Fixture, "string_format_report_all_type_errors_at_correct_posi
 
     CHECK_EQ(Location(Position{1, 38}, Position{1, 42}), result.errors[2].location);
     CHECK_EQ(TypeErrorData(TypeMismatch{stringType, booleanType}), result.errors[2].data);
+
+    CHECK_EQ(Location(Position{2, 32}, Position{2, 33}), result.errors[3].location);
+    CHECK_EQ(TypeErrorData(TypeMismatch{stringType, numberType}), result.errors[3].data);
+
+    CHECK_EQ(Location(Position{2, 35}, Position{2, 42}), result.errors[4].location);
+    CHECK_EQ(TypeErrorData(TypeMismatch{numberType, stringType}), result.errors[4].data);
+
+    CHECK_EQ(Location(Position{2, 44}, Position{2, 48}), result.errors[5].location);
+    CHECK_EQ(TypeErrorData(TypeMismatch{stringType, booleanType}), result.errors[5].data);
 }
 
 TEST_CASE_FIXTURE(Fixture, "tonumber_returns_optional_number_type")

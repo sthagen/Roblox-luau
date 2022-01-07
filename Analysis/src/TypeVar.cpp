@@ -31,17 +31,24 @@ std::optional<ExprResult<TypePackId>> magicFunctionFormat(
 
 TypeId follow(TypeId t)
 {
-    auto advance = [](TypeId ty) -> std::optional<TypeId> {
-        if (auto btv = get<Unifiable::Bound<TypeId>>(ty))
+    return follow(t, [](TypeId t) {
+        return t;
+    });
+}
+
+TypeId follow(TypeId t, std::function<TypeId(TypeId)> mapper)
+{
+    auto advance = [&mapper](TypeId ty) -> std::optional<TypeId> {
+        if (auto btv = get<Unifiable::Bound<TypeId>>(mapper(ty)))
             return btv->boundTo;
-        else if (auto ttv = get<TableTypeVar>(ty))
+        else if (auto ttv = get<TableTypeVar>(mapper(ty)))
             return ttv->boundTo;
         else
             return std::nullopt;
     };
 
-    auto force = [](TypeId ty) {
-        if (auto ltv = get_if<LazyTypeVar>(&ty->ty))
+    auto force = [&mapper](TypeId ty) {
+        if (auto ltv = get_if<LazyTypeVar>(&mapper(ty)->ty))
         {
             TypeId res = ltv->thunk();
             if (get<LazyTypeVar>(res))
@@ -996,18 +1003,19 @@ std::optional<ExprResult<TypePackId>> magicFunctionFormat(
     std::vector<TypeId> expected = parseFormatString(typechecker, fmt->value.data, fmt->value.size);
     const auto& [params, tail] = flatten(paramPack);
 
-    const size_t dataOffset = 1;
+    size_t paramOffset = 1;
+    size_t dataOffset = expr.self ? 0 : 1;
 
     // unify the prefix one argument at a time
-    for (size_t i = 0; i < expected.size() && i + dataOffset < params.size(); ++i)
+    for (size_t i = 0; i < expected.size() && i + paramOffset < params.size(); ++i)
     {
-        Location location = expr.args.data[std::min(i, expr.args.size - 1)]->location;
+        Location location = expr.args.data[std::min(i + dataOffset, expr.args.size - 1)]->location;
 
-        typechecker.unify(expected[i], params[i + dataOffset], location);
+        typechecker.unify(params[i + paramOffset], expected[i], location);
     }
 
     // if we know the argument count or if we have too many arguments for sure, we can issue an error
-    const size_t actualParamSize = params.size() - dataOffset;
+    size_t actualParamSize = params.size() - paramOffset;
 
     if (expected.size() != actualParamSize && (!tail || expected.size() < actualParamSize))
         typechecker.reportError(TypeError{expr.location, CountMismatch{expected.size(), actualParamSize}});
