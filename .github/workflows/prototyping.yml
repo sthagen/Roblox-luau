@@ -1,25 +1,10 @@
 name: prototyping
 
 on:
-  push:
-    branches:
-      - 'master'
-      - 'prototyping-*'
-    paths:
-      - '.github/workflows/**'
-      - 'prototyping/**'
-      - 'Analysis/**'
-      - 'Ast/**'
-      - 'CLI/Ast.cpp'
-      - 'CLI/FileUtils.*'
   pull_request:
     paths:
-      - '.github/workflows/**'
+      - '.github/workflows/prototyping.yml'
       - 'prototyping/**'
-      - 'Analysis/**'
-      - 'Ast/**'
-      - 'CLI/Ast.cpp'
-      - 'CLI/FileUtils.*'
 
 jobs:
   linux:
@@ -73,7 +58,7 @@ jobs:
       working-directory: prototyping
       run: |
         mkdir test-failures
-        python tests -l ../build/luau-ast --write-diff-failures --diff-failure-location test-failures/
+        python tests.py -l ../build/luau-ast --write-diff-failures --diff-failure-location test-failures/
     - uses: actions/upload-artifact@v2
       if: failure()
       with:
