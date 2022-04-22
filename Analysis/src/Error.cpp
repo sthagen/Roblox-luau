@@ -8,9 +8,6 @@
 
 #include <stdexcept>
 
-LUAU_FASTFLAGVARIABLE(BetterDiagnosticCodesInStudio, false);
-LUAU_FASTFLAGVARIABLE(LuauTypeMismatchModuleName, false);
-
 static std::string wrongNumberOfArgsString(size_t expectedCount, size_t actualCount, const char* argPrefix = nullptr, bool isVariadic = false)
 {
     std::string s = "expects ";
@@ -60,27 +57,20 @@ struct ErrorConverter
 
         std::string result;
 
-        if (FFlag::LuauTypeMismatchModuleName)
+        if (givenTypeName == wantedTypeName)
         {
-            if (givenTypeName == wantedTypeName)
+            if (auto givenDefinitionModule = getDefinitionModuleName(tm.givenType))
             {
-                if (auto givenDefinitionModule = getDefinitionModuleName(tm.givenType))
+                if (auto wantedDefinitionModule = getDefinitionModuleName(tm.wantedType))
                 {
-                    if (auto wantedDefinitionModule = getDefinitionModuleName(tm.wantedType))
-                    {
-                        result = "Type '" + givenTypeName + "' from '" + *givenDefinitionModule + "' could not be converted into '" + wantedTypeName +
-                                 "' from '" + *wantedDefinitionModule + "'";
-                    }
+                    result = "Type '" + givenTypeName + "' from '" + *givenDefinitionModule + "' could not be converted into '" + wantedTypeName +
+                             "' from '" + *wantedDefinitionModule + "'";
                 }
             }
+        }
 
-            if (result.empty())
-                result = "Type '" + givenTypeName + "' could not be converted into '" + wantedTypeName + "'";
-        }
-        else
-        {
+        if (result.empty())
             result = "Type '" + givenTypeName + "' could not be converted into '" + wantedTypeName + "'";
-        }
 
         if (tm.error)
         {
@@ -252,14 +242,7 @@ struct ErrorConverter
 
     std::string operator()(const Luau::SyntaxError& e) const
     {
-        if (FFlag::BetterDiagnosticCodesInStudio)
-        {
-            return e.message;
-        }
-        else
-        {
-            return "Syntax error: " + e.message;
-        }
+        return e.message;
     }
 
     std::string operator()(const Luau::CodeTooComplex&) const
@@ -450,6 +433,11 @@ struct ErrorConverter
     std::string operator()(const TypesAreUnrelated& e) const
     {
         return "Cannot cast '" + toString(e.left) + "' into '" + toString(e.right) + "' because the types are unrelated";
+    }
+
+    std::string operator()(const NormalizationTooComplex&) const
+    {
+        return "Code is too complex to typecheck! Consider simplifying the code around this area";
     }
 };
 
@@ -716,14 +704,14 @@ bool containsParseErrorName(const TypeError& error)
 }
 
 template<typename T>
-void copyError(T& e, TypeArena& destArena, SeenTypes& seenTypes, SeenTypePacks& seenTypePacks, CloneState cloneState)
+void copyError(T& e, TypeArena& destArena, CloneState cloneState)
 {
     auto clone = [&](auto&& ty) {
-        return ::Luau::clone(ty, destArena, seenTypes, seenTypePacks, cloneState);
+        return ::Luau::clone(ty, destArena, cloneState);
     };
 
     auto visitErrorData = [&](auto&& e) {
-        copyError(e, destArena, seenTypes, seenTypePacks, cloneState);
+        copyError(e, destArena, cloneState);
     };
 
     if constexpr (false)
@@ -844,18 +832,19 @@ void copyError(T& e, TypeArena& destArena, SeenTypes& seenTypes, SeenTypePacks& 
         e.left = clone(e.left);
         e.right = clone(e.right);
     }
+    else if constexpr (std::is_same_v<T, NormalizationTooComplex>)
+    {
+    }
     else
         static_assert(always_false_v<T>, "Non-exhaustive type switch");
 }
 
 void copyErrors(ErrorVec& errors, TypeArena& destArena)
 {
-    SeenTypes seenTypes;
-    SeenTypePacks seenTypePacks;
     CloneState cloneState;
 
     auto visitErrorData = [&](auto&& e) {
-        copyError(e, destArena, seenTypes, seenTypePacks, cloneState);
+        copyError(e, destArena, cloneState);
     };
 
     LUAU_ASSERT(!destArena.typeVars.isFrozen());

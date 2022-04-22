@@ -52,7 +52,7 @@ inline void unsee(std::unordered_set<void*>& seen, const void* tv)
 
 inline void unsee(DenseHashSet<void*>& seen, const void* tv)
 {
-    // When DenseHashSet is used for 'visitOnce', where don't forget visited elements
+    // When DenseHashSet is used for 'visitTypeVarOnce', where don't forget visited elements
 }
 
 template<typename F, typename Set>
@@ -81,6 +81,15 @@ void visit(TypeId ty, F& f, Set& seen)
 
     else if (auto etv = get<ErrorTypeVar>(ty))
         apply(ty, *etv, seen, f);
+
+    else if (auto ctv = get<ConstrainedTypeVar>(ty))
+    {
+        if (apply(ty, *ctv, seen, f))
+        {
+            for (TypeId part : ctv->parts)
+                visit(part, f, seen);
+        }
+    }
 
     else if (auto ptv = get<PrimitiveTypeVar>(ty))
         apply(ty, *ptv, seen, f);

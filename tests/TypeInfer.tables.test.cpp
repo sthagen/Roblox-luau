@@ -11,6 +11,8 @@
 
 using namespace Luau;
 
+LUAU_FASTFLAG(LuauLowerBoundsCalculation);
+
 TEST_SUITE_BEGIN("TableTests");
 
 TEST_CASE_FIXTURE(Fixture, "basic")
@@ -1211,7 +1213,10 @@ TEST_CASE_FIXTURE(Fixture, "pass_incompatible_union_to_a_generic_table_without_c
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK(get<TypeMismatch>(result.errors[0]));
+    if (FFlag::LuauLowerBoundsCalculation)
+        CHECK(get<MissingProperties>(result.errors[0]));
+    else
+        CHECK(get<TypeMismatch>(result.errors[0]));
 }
 
 // This unit test could be flaky if the fix has regressed.
@@ -2081,7 +2086,6 @@ caused by:
 TEST_CASE_FIXTURE(Fixture, "error_detailed_indexer_key")
 {
     ScopedFastFlag luauTableSubtypingVariance2{"LuauTableSubtypingVariance2", true}; // Only for new path
-    ScopedFastFlag luauExtendedIndexerError{"LuauExtendedIndexerError", true};
 
     CheckResult result = check(R"(
         type A = { [number]: string }
@@ -2100,7 +2104,6 @@ caused by:
 TEST_CASE_FIXTURE(Fixture, "error_detailed_indexer_value")
 {
     ScopedFastFlag luauTableSubtypingVariance2{"LuauTableSubtypingVariance2", true}; // Only for new path
-    ScopedFastFlag luauExtendedIndexerError{"LuauExtendedIndexerError", true};
 
     CheckResult result = check(R"(
         type A = { [number]: number }
@@ -2920,6 +2923,60 @@ TEST_CASE_FIXTURE(Fixture, "inferred_properties_of_a_table_should_start_with_the
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+// The real bug here was that we weren't always uncondionally typechecking a trailing return statement last.
+TEST_CASE_FIXTURE(Fixture, "dont_leak_free_table_props")
+{
+    CheckResult result = check(R"(
+        local function a(state)
+            print(state.blah)
+        end
+
+        local function b(state) -- The bug was that we inferred state: {blah: any, gwar: any}
+            print(state.gwar)
+        end
+
+        return function()
+            return function(state)
+                a(state)
+                b(state)
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK_EQ("<a>({+ blah: a +}) -> ()", toString(requireType("a")));
+    CHECK_EQ("<a>({+ gwar: a +}) -> ()", toString(requireType("b")));
+    CHECK_EQ("() -> <a, b>({+ blah: a, gwar: b +}) -> ()", toString(getMainModule()->getModuleScope()->returnType));
+}
+
+TEST_CASE_FIXTURE(Fixture, "inferred_return_type_of_free_table")
+{
+    ScopedFastFlag sff[] = {
+        {"LuauLowerBoundsCalculation", true},
+    };
+
+    check(R"(
+        function Base64FileReader(data)
+            local reader = {}
+            local index: number
+
+            function reader:PeekByte()
+                return data:byte(index)
+            end
+
+            function reader:Byte()
+                return data:byte(index - 1)
+            end
+
+            return reader
+        end
+    )");
+
+    CHECK_EQ("<a...>(t1) -> {| Byte: <b>(b) -> (a...), PeekByte: <c>(c) -> (a...) |} where t1 = {+ byte: (t1, number) -> (a...) +}",
+        toString(requireType("Base64FileReader")));
 }
 
 TEST_CASE_FIXTURE(Fixture, "mixed_tables_with_implicit_numbered_keys")
