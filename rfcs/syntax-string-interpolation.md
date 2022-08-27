@@ -87,12 +87,14 @@ print(`Welcome to \
 --  Luau!
 ```
 
-This expression can also come after a `prefixexp`:
+We currently *prohibit* using interpolated strings in function calls without parentheses, this is illegal:
 
 ```
 local name = "world"
 print`Hello {name}`
 ```
+
+> Note: This restriction is likely temporary while we work through string interpolation DSLs, an ability to pass individual components of interpolated strings to a function.
 
 The restriction on `{{` exists solely for the people coming from languages e.g. C#, Rust, or Python which uses `{{` to escape and get the character `{` at runtime. We're also rejecting this at parse time too, since the proper way to escape it is `\{`, so:
 
@@ -137,6 +139,13 @@ It must be said that we are not allowing this style of string literals in type a
 ```lua
 local foo: `foo`
 local bar: `bar{baz}`
+```
+
+String interpolation syntax will also support escape sequences. Except `\u{...}`, there is no ambiguity with other escape sequences. If `\u{...}` occurs within a string interpolation literal, it takes priority.
+
+```lua
+local foo = `foo\tbar` -- "foo	bar"
+local bar = `\u{0041} \u{42}` -- "A B"
 ```
 
 ## Drawbacks
