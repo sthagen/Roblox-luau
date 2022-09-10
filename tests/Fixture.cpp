@@ -2,6 +2,8 @@
 #include "Fixture.h"
 
 #include "Luau/AstQuery.h"
+#include "Luau/ModuleResolver.h"
+#include "Luau/NotNull.h"
 #include "Luau/Parser.h"
 #include "Luau/TypeVar.h"
 #include "Luau/TypeAttach.h"
@@ -89,6 +91,7 @@ Fixture::Fixture(bool freeze, bool prepareAutocomplete)
     : sff_DebugLuauFreezeArena("DebugLuauFreezeArena", freeze)
     , frontend(&fileResolver, &configResolver, {/* retainFullTypeGraphs= */ true})
     , typeChecker(frontend.typeChecker)
+    , singletonTypes(frontend.singletonTypes)
 {
     configResolver.defaultConfig.mode = Mode::Strict;
     configResolver.defaultConfig.enabledLint.warningMask = ~0ull;
@@ -365,9 +368,9 @@ void Fixture::dumpErrors(std::ostream& os, const std::vector<TypeError>& errors)
 
 void Fixture::registerTestTypes()
 {
-    addGlobalBinding(typeChecker, "game", typeChecker.anyType, "@luau");
-    addGlobalBinding(typeChecker, "workspace", typeChecker.anyType, "@luau");
-    addGlobalBinding(typeChecker, "script", typeChecker.anyType, "@luau");
+    addGlobalBinding(frontend, "game", typeChecker.anyType, "@luau");
+    addGlobalBinding(frontend, "workspace", typeChecker.anyType, "@luau");
+    addGlobalBinding(frontend, "script", typeChecker.anyType, "@luau");
 }
 
 void Fixture::dumpErrors(const CheckResult& cr)
@@ -432,7 +435,7 @@ BuiltinsFixture::BuiltinsFixture(bool freeze, bool prepareAutocomplete)
     Luau::unfreeze(frontend.typeChecker.globalTypes);
     Luau::unfreeze(frontend.typeCheckerForAutocomplete.globalTypes);
 
-    registerBuiltinTypes(frontend.typeChecker);
+    registerBuiltinTypes(frontend);
     if (prepareAutocomplete)
         registerBuiltinTypes(frontend.typeCheckerForAutocomplete);
     registerTestTypes();
@@ -444,10 +447,11 @@ BuiltinsFixture::BuiltinsFixture(bool freeze, bool prepareAutocomplete)
 ConstraintGraphBuilderFixture::ConstraintGraphBuilderFixture()
     : Fixture()
     , mainModule(new Module)
-    , cgb(mainModuleName, mainModule, &arena, NotNull(&ice), frontend.getGlobalScope())
+    , cgb(mainModuleName, mainModule, &arena, NotNull(&moduleResolver), singletonTypes, NotNull(&ice), frontend.getGlobalScope(), &logger)
     , forceTheFlag{"DebugLuauDeferredConstraintResolution", true}
 {
     BlockedTypeVar::nextIndex = 0;
+    BlockedTypePack::nextIndex = 0;
 }
 
 ModuleName fromString(std::string_view name)

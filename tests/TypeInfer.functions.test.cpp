@@ -127,16 +127,17 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "vararg_function_is_quantified")
         return T
     )");
 
+    LUAU_REQUIRE_NO_ERRORS(result);
+
     auto r = first(getMainModule()->getModuleScope()->returnType);
     REQUIRE(r);
 
     TableTypeVar* ttv = getMutable<TableTypeVar>(*r);
     REQUIRE(ttv);
 
+    REQUIRE(ttv->props.count("f"));
     TypeId k = ttv->props["f"].type;
     REQUIRE(k);
-
-    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(Fixture, "list_only_alternative_overloads_that_match_argument_count")

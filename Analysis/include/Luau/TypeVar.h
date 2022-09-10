@@ -1,11 +1,13 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
+#include "Luau/Ast.h"
 #include "Luau/DenseHash.h"
 #include "Luau/Predicate.h"
 #include "Luau/Unifiable.h"
 #include "Luau/Variant.h"
 #include "Luau/Common.h"
+#include "Luau/NotNull.h"
 
 #include <set>
 #include <string>
@@ -262,6 +264,8 @@ struct WithPredicate
 using MagicFunction = std::function<std::optional<WithPredicate<TypePackId>>(
     struct TypeChecker&, const std::shared_ptr<struct Scope>&, const class AstExprCall&, WithPredicate<TypePackId>)>;
 
+using DcrMagicFunction = std::function<bool(NotNull<struct ConstraintSolver>, TypePackId, const class AstExprCall*)>;
+
 struct FunctionTypeVar
 {
     // Global monomorphic function
@@ -287,7 +291,8 @@ struct FunctionTypeVar
     std::vector<std::optional<FunctionArgument>> argNames;
     TypePackId retTypes;
     std::optional<FunctionDefinition> definition;
-    MagicFunction magicFunction = nullptr; // Function pointer, can be nullptr.
+    MagicFunction magicFunction = nullptr;       // Function pointer, can be nullptr.
+    DcrMagicFunction dcrMagicFunction = nullptr; // can be nullptr
     bool hasSelf;
     Tags tags;
     bool hasNoGenerics = false;
@@ -462,8 +467,9 @@ struct TypeFun
  */
 struct PendingExpansionTypeVar
 {
-    PendingExpansionTypeVar(TypeFun fn, std::vector<TypeId> typeArguments, std::vector<TypePackId> packArguments);
-    TypeFun fn;
+    PendingExpansionTypeVar(std::optional<AstName> prefix, AstName name, std::vector<TypeId> typeArguments, std::vector<TypePackId> packArguments);
+    std::optional<AstName> prefix;
+    AstName name;
     std::vector<TypeId> typeArguments;
     std::vector<TypePackId> packArguments;
     size_t index;
@@ -580,7 +586,7 @@ bool isOverloadedFunction(TypeId ty);
 // True when string is a subtype of ty
 bool maybeString(TypeId ty);
 
-std::optional<TypeId> getMetatable(TypeId type);
+std::optional<TypeId> getMetatable(TypeId type, NotNull<struct SingletonTypes> singletonTypes);
 TableTypeVar* getMutableTableType(TypeId type);
 const TableTypeVar* getTableType(TypeId type);
 
@@ -608,21 +614,6 @@ bool hasLength(TypeId ty, DenseHashSet<TypeId>& seen, int* recursionCount);
 
 struct SingletonTypes
 {
-    const TypeId nilType;
-    const TypeId numberType;
-    const TypeId stringType;
-    const TypeId booleanType;
-    const TypeId threadType;
-    const TypeId trueType;
-    const TypeId falseType;
-    const TypeId anyType;
-    const TypeId unknownType;
-    const TypeId neverType;
-
-    const TypePackId anyTypePack;
-    const TypePackId neverTypePack;
-    const TypePackId uninhabitableTypePack;
-
     SingletonTypes();
     ~SingletonTypes();
     SingletonTypes(const SingletonTypes&) = delete;
@@ -638,9 +629,28 @@ private:
     bool debugFreezeArena = false;
 
     TypeId makeStringMetatable();
+
+public:
+    const TypeId nilType;
+    const TypeId numberType;
+    const TypeId stringType;
+    const TypeId booleanType;
+    const TypeId threadType;
+    const TypeId trueType;
+    const TypeId falseType;
+    const TypeId anyType;
+    const TypeId unknownType;
+    const TypeId neverType;
+    const TypeId errorType;
+
+    const TypePackId anyTypePack;
+    const TypePackId neverTypePack;
+    const TypePackId uninhabitableTypePack;
+    const TypePackId errorTypePack;
 };
 
-SingletonTypes& getSingletonTypes();
+// Clip with FFlagLuauNoMoreGlobalSingletonTypes
+SingletonTypes& DEPRECATED_getSingletonTypes();
 
 void persist(TypeId ty);
 void persist(TypePackId tp);

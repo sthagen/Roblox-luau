@@ -35,7 +35,7 @@ TEST_CASE_FIXTURE(Fixture, "UnknownGlobal")
 TEST_CASE_FIXTURE(Fixture, "DeprecatedGlobal")
 {
     // Normally this would be defined externally, so hack it in for testing
-    addGlobalBinding(typeChecker, "Wait", Binding{typeChecker.anyType, {}, true, "wait", "@test/global/Wait"});
+    addGlobalBinding(frontend, "Wait", Binding{typeChecker.anyType, {}, true, "wait", "@test/global/Wait"});
 
     LintResult result = lintTyped("Wait(5)");
 
@@ -49,7 +49,7 @@ TEST_CASE_FIXTURE(Fixture, "DeprecatedGlobalNoReplacement")
 
     // Normally this would be defined externally, so hack it in for testing
     const char* deprecationReplacementString = "";
-    addGlobalBinding(typeChecker, "Version", Binding{typeChecker.anyType, {}, true, deprecationReplacementString});
+    addGlobalBinding(frontend, "Version", Binding{typeChecker.anyType, {}, true, deprecationReplacementString});
 
     LintResult result = lintTyped("Version()");
 
@@ -380,7 +380,7 @@ return bar()
 TEST_CASE_FIXTURE(Fixture, "ImportUnused")
 {
     // Normally this would be defined externally, so hack it in for testing
-    addGlobalBinding(typeChecker, "game", typeChecker.anyType, "@test");
+    addGlobalBinding(frontend, "game", typeChecker.anyType, "@test");
 
     LintResult result = lint(R"(
 local Roact = require(game.Packages.Roact)
@@ -1181,7 +1181,7 @@ s:match("[]")
 nons:match("[]")
 )~");
 
-    CHECK_EQ(result.warnings.size(), 2);
+    REQUIRE_EQ(result.warnings.size(), 2);
     CHECK_EQ(result.warnings[0].text, "Invalid match pattern: expected ] at the end of the string to close a set");
     CHECK_EQ(result.warnings[0].location.begin.line, 3);
     CHECK_EQ(result.warnings[1].text, "Invalid match pattern: expected ] at the end of the string to close a set");
@@ -1464,7 +1464,7 @@ TEST_CASE_FIXTURE(Fixture, "DeprecatedApi")
 
     getMutable<TableTypeVar>(colorType)->props = {{"toHSV", {typeChecker.anyType, /* deprecated= */ true, "Color3:ToHSV"}}};
 
-    addGlobalBinding(typeChecker, "Color3", Binding{colorType, {}});
+    addGlobalBinding(frontend, "Color3", Binding{colorType, {}});
 
     freeze(typeChecker.globalTypes);
 
@@ -1737,8 +1737,6 @@ local _ = 0x0xffffffffffffffffffffffffffffffffff
 
 TEST_CASE_FIXTURE(Fixture, "ComparisonPrecedence")
 {
-    ScopedFastFlag sff("LuauLintComparisonPrecedence", true);
-
     LintResult result = lint(R"(
 local a, b = ...
 
@@ -1746,6 +1744,7 @@ local _ = not a == b
 local _ = not a ~= b
 local _ = not a <= b
 local _ = a <= b == 0
+local _ = a <= b <= 0
 
 local _ = not a == not b -- weird but ok
 
@@ -1760,11 +1759,12 @@ local _ = (a <= b) == 0
 local _ = a <= (b == 0)
 )");
 
-    REQUIRE_EQ(result.warnings.size(), 4);
-    CHECK_EQ(result.warnings[0].text, "not X == Y is equivalent to (not X) == Y; consider using X ~= Y, or wrap one of the expressions in parentheses to silence");
-    CHECK_EQ(result.warnings[1].text, "not X ~= Y is equivalent to (not X) ~= Y; consider using X == Y, or wrap one of the expressions in parentheses to silence");
-    CHECK_EQ(result.warnings[2].text, "not X <= Y is equivalent to (not X) <= Y; wrap one of the expressions in parentheses to silence");
-    CHECK_EQ(result.warnings[3].text, "X <= Y == Z is equivalent to (X <= Y) == Z; wrap one of the expressions in parentheses to silence");
+    REQUIRE_EQ(result.warnings.size(), 5);
+    CHECK_EQ(result.warnings[0].text, "not X == Y is equivalent to (not X) == Y; consider using X ~= Y, or add parentheses to silence");
+    CHECK_EQ(result.warnings[1].text, "not X ~= Y is equivalent to (not X) ~= Y; consider using X == Y, or add parentheses to silence");
+    CHECK_EQ(result.warnings[2].text, "not X <= Y is equivalent to (not X) <= Y; add parentheses to silence");
+    CHECK_EQ(result.warnings[3].text, "X <= Y == Z is equivalent to (X <= Y) == Z; add parentheses to silence");
+    CHECK_EQ(result.warnings[4].text, "X <= Y <= Z is equivalent to (X <= Y) <= Z; did you mean X <= Y and Y <= Z?");
 }
 
 TEST_SUITE_END();

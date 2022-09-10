@@ -58,7 +58,7 @@ public:
 // within a program are borrowed pointers into this set.
 struct TypeChecker
 {
-    explicit TypeChecker(ModuleResolver* resolver, InternalErrorReporter* iceHandler);
+    explicit TypeChecker(ModuleResolver* resolver, NotNull<SingletonTypes> singletonTypes, InternalErrorReporter* iceHandler);
     TypeChecker(const TypeChecker&) = delete;
     TypeChecker& operator=(const TypeChecker&) = delete;
 
@@ -166,7 +166,8 @@ struct TypeChecker
      */
     bool unify(TypeId subTy, TypeId superTy, const ScopePtr& scope, const Location& location);
     bool unify(TypeId subTy, TypeId superTy, const ScopePtr& scope, const Location& location, const UnifierOptions& options);
-    bool unify(TypePackId subTy, TypePackId superTy, const ScopePtr& scope, const Location& location, CountMismatch::Context ctx = CountMismatch::Context::Arg);
+    bool unify(TypePackId subTy, TypePackId superTy, const ScopePtr& scope, const Location& location,
+        CountMismatch::Context ctx = CountMismatch::Context::Arg);
 
     /** Attempt to unify the types.
      * If this fails, and the subTy type can be instantiated, do so and try unification again.
@@ -352,6 +353,7 @@ public:
     ModuleName currentModuleName;
 
     std::function<void(const ModuleName&, const ScopePtr&)> prepareModuleScope;
+    NotNull<SingletonTypes> singletonTypes;
     InternalErrorReporter* iceHandler;
 
     UnifierSharedState unifierState;

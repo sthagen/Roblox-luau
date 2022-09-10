@@ -19,8 +19,12 @@ using ScopePtr = std::shared_ptr<Scope>;
 // A substitution which replaces free types by any
 struct Anyification : Substitution
 {
-    Anyification(TypeArena* arena, const ScopePtr& scope, InternalErrorReporter* iceHandler, TypeId anyType, TypePackId anyTypePack);
+    Anyification(TypeArena* arena, NotNull<Scope> scope, NotNull<SingletonTypes> singletonTypes, InternalErrorReporter* iceHandler, TypeId anyType,
+        TypePackId anyTypePack);
+    Anyification(TypeArena* arena, const ScopePtr& scope, NotNull<SingletonTypes> singletonTypes, InternalErrorReporter* iceHandler, TypeId anyType,
+        TypePackId anyTypePack);
     NotNull<Scope> scope;
+    NotNull<SingletonTypes> singletonTypes;
     InternalErrorReporter* iceHandler;
 
     TypeId anyType;
@@ -35,4 +39,4 @@ struct Anyification : Substitution
     bool ignoreChildren(TypePackId ty) override;
 };
 
-}
+} // namespace Luau

@@ -14,7 +14,6 @@
 
 LUAU_FASTINTVARIABLE(LuauSuggestionDistance, 4)
 LUAU_FASTFLAGVARIABLE(LuauLintGlobalNeverReadBeforeWritten, false)
-LUAU_FASTFLAGVARIABLE(LuauLintComparisonPrecedence, false)
 LUAU_FASTFLAGVARIABLE(LuauLintFixDeprecationMessage, false)
 
 namespace Luau
@@ -216,7 +215,8 @@ static bool similar(AstExpr* lhs, AstExpr* rhs)
             return false;
 
         for (size_t i = 0; i < le->strings.size; ++i)
-            if (le->strings.data[i].size != re->strings.data[i].size || memcmp(le->strings.data[i].data, re->strings.data[i].data, le->strings.data[i].size) != 0)
+            if (le->strings.data[i].size != re->strings.data[i].size ||
+                memcmp(le->strings.data[i].data, re->strings.data[i].data, le->strings.data[i].size) != 0)
                 return false;
 
         for (size_t i = 0; i < le->expressions.size; ++i)
@@ -2675,13 +2675,18 @@ public:
 private:
     LintContext* context;
 
-    bool isComparison(AstExprBinary::Op op)
+    static bool isEquality(AstExprBinary::Op op)
+    {
+        return op == AstExprBinary::CompareNe || op == AstExprBinary::CompareEq;
+    }
+
+    static bool isComparison(AstExprBinary::Op op)
     {
         return op == AstExprBinary::CompareNe || op == AstExprBinary::CompareEq || op == AstExprBinary::CompareLt || op == AstExprBinary::CompareLe ||
                op == AstExprBinary::CompareGt || op == AstExprBinary::CompareGe;
     }
 
-    bool isNot(AstExpr* node)
+    static bool isNot(AstExpr* node)
     {
         AstExprUnary* expr = node->as<AstExprUnary>();
 
@@ -2698,22 +2703,26 @@ private:
         {
             std::string op = toString(node->op);
 
-            if (node->op == AstExprBinary::CompareEq || node->op == AstExprBinary::CompareNe)
+            if (isEquality(node->op))
                 emitWarning(*context, LintWarning::Code_ComparisonPrecedence, node->location,
-                    "not X %s Y is equivalent to (not X) %s Y; consider using X %s Y, or wrap one of the expressions in parentheses to silence",
-                    op.c_str(), op.c_str(), node->op == AstExprBinary::CompareEq ? "~=" : "==");
+                    "not X %s Y is equivalent to (not X) %s Y; consider using X %s Y, or add parentheses to silence", op.c_str(), op.c_str(),
+                    node->op == AstExprBinary::CompareEq ? "~=" : "==");
             else
                 emitWarning(*context, LintWarning::Code_ComparisonPrecedence, node->location,
-                    "not X %s Y is equivalent to (not X) %s Y; wrap one of the expressions in parentheses to silence", op.c_str(), op.c_str());
+                    "not X %s Y is equivalent to (not X) %s Y; add parentheses to silence", op.c_str(), op.c_str());
         }
         else if (AstExprBinary* left = node->left->as<AstExprBinary>(); left && isComparison(left->op))
         {
             std::string lop = toString(left->op);
             std::string rop = toString(node->op);
 
-            emitWarning(*context, LintWarning::Code_ComparisonPrecedence, node->location,
-                "X %s Y %s Z is equivalent to (X %s Y) %s Z; wrap one of the expressions in parentheses to silence", lop.c_str(), rop.c_str(),
-                lop.c_str(), rop.c_str());
+            if (isEquality(left->op) || isEquality(node->op))
+                emitWarning(*context, LintWarning::Code_ComparisonPrecedence, node->location,
+                    "X %s Y %s Z is equivalent to (X %s Y) %s Z; add parentheses to silence", lop.c_str(), rop.c_str(), lop.c_str(), rop.c_str());
+            else
+                emitWarning(*context, LintWarning::Code_ComparisonPrecedence, node->location,
+                    "X %s Y %s Z is equivalent to (X %s Y) %s Z; did you mean X %s Y and Y %s Z?", lop.c_str(), rop.c_str(), lop.c_str(), rop.c_str(),
+                    lop.c_str(), rop.c_str());
         }
 
         return true;
@@ -2944,7 +2953,7 @@ std::vector<LintWarning> lint(AstStat* root, const AstNameTable& names, const Sc
     if (context.warningEnabled(LintWarning::Code_IntegerParsing))
         LintIntegerParsing::process(context);
 
-    if (context.warningEnabled(LintWarning::Code_ComparisonPrecedence) && FFlag::LuauLintComparisonPrecedence)
+    if (context.warningEnabled(LintWarning::Code_ComparisonPrecedence))
         LintComparisonPrecedence::process(context);
 
     std::sort(context.result.begin(), context.result.end(), WarningComparator());

@@ -12,6 +12,7 @@
 #include "Luau/ToString.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/TypeVar.h"
+#include "Luau/DcrLogger.h"
 
 #include "IostreamOptional.h"
 #include "ScopedFlags.h"
@@ -132,10 +133,12 @@ struct Fixture
 
     TestFileResolver fileResolver;
     TestConfigResolver configResolver;
+    NullModuleResolver moduleResolver;
     std::unique_ptr<SourceModule> sourceModule;
     Frontend frontend;
     InternalErrorReporter ice;
     TypeChecker& typeChecker;
+    NotNull<SingletonTypes> singletonTypes;
 
     std::string decorateWithTypes(const std::string& code);
 
@@ -164,6 +167,7 @@ struct ConstraintGraphBuilderFixture : Fixture
     TypeArena arena;
     ModulePtr mainModule;
     ConstraintGraphBuilder cgb;
+    DcrLogger logger;
 
     ScopedFastFlag forceTheFlag;
 
@@ -244,7 +248,7 @@ struct FindNthOccurenceOf : public AstVisitor
  * 2. Luau::query<AstExprBinary>(Luau::query<AstStatFunction>(block))
  * 3. Luau::query<AstExprBinary>(block, {nth<AstExprBinary>(2)})
  */
-template<typename T, size_t N = 1>
+template<typename T, int N = 1>
 T* query(AstNode* node, const std::vector<Nth>& nths = {nth<T>(N)})
 {
     static_assert(std::is_base_of_v<AstNode, T>, "T must be a derived class of AstNode");
