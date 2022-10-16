@@ -92,7 +92,8 @@ std::optional<std::string> TestFileResolver::getEnvironmentForModule(const Modul
 
 Fixture::Fixture(bool freeze, bool prepareAutocomplete)
     : sff_DebugLuauFreezeArena("DebugLuauFreezeArena", freeze)
-    , frontend(&fileResolver, &configResolver, {/* retainFullTypeGraphs= */ true, /* forAutocomplete */ false, /* randomConstraintResolutionSeed */ randomSeed})
+    , frontend(&fileResolver, &configResolver,
+          {/* retainFullTypeGraphs= */ true, /* forAutocomplete */ false, /* randomConstraintResolutionSeed */ randomSeed})
     , typeChecker(frontend.typeChecker)
     , singletonTypes(frontend.singletonTypes)
 {
@@ -429,7 +430,8 @@ LoadDefinitionFileResult Fixture::loadDefinition(const std::string& source)
     LoadDefinitionFileResult result = frontend.loadDefinitionFile(source, "@test");
     freeze(typeChecker.globalTypes);
 
-    dumpErrors(result.module);
+    if (result.module)
+        dumpErrors(result.module);
     REQUIRE_MESSAGE(result.success, "loadDefinition: unable to load definition file");
     return result;
 }
