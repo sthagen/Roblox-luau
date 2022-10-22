@@ -1,11 +1,13 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/Frontend.h"
 
+#include "Luau/BuiltinDefinitions.h"
 #include "Luau/Clone.h"
 #include "Luau/Common.h"
 #include "Luau/Config.h"
 #include "Luau/ConstraintGraphBuilder.h"
 #include "Luau/ConstraintSolver.h"
+#include "Luau/DataFlowGraphBuilder.h"
 #include "Luau/DcrLogger.h"
 #include "Luau/FileResolver.h"
 #include "Luau/Parser.h"
@@ -15,7 +17,6 @@
 #include "Luau/TypeChecker2.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/Variant.h"
-#include "Luau/BuiltinDefinitions.h"
 
 #include <algorithm>
 #include <chrono>
@@ -26,10 +27,10 @@ LUAU_FASTINT(LuauTarjanChildLimit)
 LUAU_FASTFLAG(LuauInferInNoCheckMode)
 LUAU_FASTFLAG(LuauNoMoreGlobalSingletonTypes)
 LUAU_FASTFLAGVARIABLE(LuauKnowsTheDataModel3, false)
-LUAU_FASTFLAGVARIABLE(LuauAutocompleteDynamicLimits, false)
 LUAU_FASTINTVARIABLE(LuauAutocompleteCheckTimeoutMs, 100)
 LUAU_FASTFLAGVARIABLE(DebugLuauDeferredConstraintResolution, false)
 LUAU_FASTFLAG(DebugLuauLogSolverToJson);
+LUAU_FASTFLAGVARIABLE(LuauFixMarkDirtyReverseDeps, false)
 
 namespace Luau
 {
@@ -488,23 +489,19 @@ CheckResult Frontend::check(const ModuleName& name, std::optional<FrontendOption
             else
                 typeCheckerForAutocomplete.finishTime = std::nullopt;
 
-            if (FFlag::LuauAutocompleteDynamicLimits)
-            {
-                // TODO: This is a dirty ad hoc solution for autocomplete timeouts
-                // We are trying to dynamically adjust our existing limits to lower total typechecking time under the limit
-                // so that we'll have type information for the whole file at lower quality instead of a full abort in the middle
-                if (FInt::LuauTarjanChildLimit > 0)
-                    typeCheckerForAutocomplete.instantiationChildLimit =
-                        std::max(1, int(FInt::LuauTarjanChildLimit * sourceNode.autocompleteLimitsMult));
-                else
-                    typeCheckerForAutocomplete.instantiationChildLimit = std::nullopt;
+            // TODO: This is a dirty ad hoc solution for autocomplete timeouts
+            // We are trying to dynamically adjust our existing limits to lower total typechecking time under the limit
+            // so that we'll have type information for the whole file at lower quality instead of a full abort in the middle
+            if (FInt::LuauTarjanChildLimit > 0)
+                typeCheckerForAutocomplete.instantiationChildLimit = std::max(1, int(FInt::LuauTarjanChildLimit * sourceNode.autocompleteLimitsMult));
+            else
+                typeCheckerForAutocomplete.instantiationChildLimit = std::nullopt;
 
-                if (FInt::LuauTypeInferIterationLimit > 0)
-                    typeCheckerForAutocomplete.unifierIterationLimit =
-                        std::max(1, int(FInt::LuauTypeInferIterationLimit * sourceNode.autocompleteLimitsMult));
-                else
-                    typeCheckerForAutocomplete.unifierIterationLimit = std::nullopt;
-            }
+            if (FInt::LuauTypeInferIterationLimit > 0)
+                typeCheckerForAutocomplete.unifierIterationLimit =
+                    std::max(1, int(FInt::LuauTypeInferIterationLimit * sourceNode.autocompleteLimitsMult));
+            else
+                typeCheckerForAutocomplete.unifierIterationLimit = std::nullopt;
 
             ModulePtr moduleForAutocomplete = FFlag::DebugLuauDeferredConstraintResolution
                                                   ? check(sourceModule, mode, environmentScope, requireCycles, /*forAutocomplete*/ true)
@@ -518,10 +515,9 @@ CheckResult Frontend::check(const ModuleName& name, std::optional<FrontendOption
             {
                 checkResult.timeoutHits.push_back(moduleName);
 
-                if (FFlag::LuauAutocompleteDynamicLimits)
-                    sourceNode.autocompleteLimitsMult = sourceNode.autocompleteLimitsMult / 2.0;
+                sourceNode.autocompleteLimitsMult = sourceNode.autocompleteLimitsMult / 2.0;
             }
-            else if (FFlag::LuauAutocompleteDynamicLimits && duration < autocompleteTimeLimit / 2.0)
+            else if (duration < autocompleteTimeLimit / 2.0)
             {
                 sourceNode.autocompleteLimitsMult = std::min(sourceNode.autocompleteLimitsMult * 2.0, 1.0);
             }
@@ -807,13 +803,26 @@ void Frontend::markDirty(const ModuleName& name, std::vector<ModuleName>* marked
         sourceNode.dirtyModule = true;
         sourceNode.dirtyModuleForAutocomplete = true;
 
-        if (0 == reverseDeps.count(name))
-            continue;
+        if (FFlag::LuauFixMarkDirtyReverseDeps)
+        {
+            if (0 == reverseDeps.count(next))
+                continue;
 
-        sourceModules.erase(name);
+            sourceModules.erase(next);
 
-        const std::vector<ModuleName>& dependents = reverseDeps[name];
-        queue.insert(queue.end(), dependents.begin(), dependents.end());
+            const std::vector<ModuleName>& dependents = reverseDeps[next];
+            queue.insert(queue.end(), dependents.begin(), dependents.end());
+        }
+        else
+        {
+            if (0 == reverseDeps.count(name))
+                continue;
+
+            sourceModules.erase(name);
+
+            const std::vector<ModuleName>& dependents = reverseDeps[name];
+            queue.insert(queue.end(), dependents.begin(), dependents.end());
+        }
     }
 }
 
@@ -857,13 +866,25 @@ ModulePtr Frontend::check(
         }
     }
 
+    DataFlowGraph dfg = DataFlowGraphBuilder::build(sourceModule.root, NotNull{&iceHandler});
+
     const NotNull<ModuleResolver> mr{forAutocomplete ? &moduleResolverForAutocomplete : &moduleResolver};
     const ScopePtr& globalScope{forAutocomplete ? typeCheckerForAutocomplete.globalScope : typeChecker.globalScope};
 
     Normalizer normalizer{&result->internalTypes, singletonTypes, NotNull{&typeChecker.unifierState}};
 
     ConstraintGraphBuilder cgb{
-        sourceModule.name, result, &result->internalTypes, mr, singletonTypes, NotNull(&iceHandler), globalScope, logger.get()};
+        sourceModule.name,
+        result,
+        &result->internalTypes,
+        mr,
+        singletonTypes,
+        NotNull(&iceHandler),
+        globalScope,
+        logger.get(),
+        NotNull{&dfg},
+    };
+
     cgb.visit(sourceModule.root);
     result->errors = std::move(cgb.errors);
 
