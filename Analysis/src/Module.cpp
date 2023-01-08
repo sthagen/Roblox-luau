@@ -7,16 +7,18 @@
 #include "Luau/Normalize.h"
 #include "Luau/RecursionCounter.h"
 #include "Luau/Scope.h"
+#include "Luau/Type.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/TypePack.h"
-#include "Luau/TypeVar.h"
-#include "Luau/VisitTypeVar.h"
+#include "Luau/TypeReduction.h"
+#include "Luau/VisitType.h"
 
 #include <algorithm>
 
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
 LUAU_FASTFLAGVARIABLE(LuauClonePublicInterfaceLess, false);
 LUAU_FASTFLAG(LuauSubstitutionReentrant);
+LUAU_FASTFLAG(LuauScopelessModule);
 LUAU_FASTFLAG(LuauClassTypeVarsInSubstitution);
 LUAU_FASTFLAG(LuauSubstitutionFixMissingFields);
 
@@ -60,12 +62,12 @@ bool isWithinComment(const SourceModule& sourceModule, Position pos)
 
 struct ClonePublicInterface : Substitution
 {
-    NotNull<SingletonTypes> singletonTypes;
+    NotNull<BuiltinTypes> builtinTypes;
     NotNull<Module> module;
 
-    ClonePublicInterface(const TxnLog* log, NotNull<SingletonTypes> singletonTypes, Module* module)
+    ClonePublicInterface(const TxnLog* log, NotNull<BuiltinTypes> builtinTypes, Module* module)
         : Substitution(log, &module->interfaceTypes)
-        , singletonTypes(singletonTypes)
+        , builtinTypes(builtinTypes)
         , module(module)
     {
         LUAU_ASSERT(module);
@@ -76,9 +78,9 @@ struct ClonePublicInterface : Substitution
         if (ty->owningArena == &module->internalTypes)
             return true;
 
-        if (const FunctionTypeVar* ftv = get<FunctionTypeVar>(ty))
+        if (const FunctionType* ftv = get<FunctionType>(ty))
             return ftv->level.level != 0;
-        if (const TableTypeVar* ttv = get<TableTypeVar>(ty))
+        if (const TableType* ttv = get<TableType>(ty))
             return ttv->level.level != 0;
         return false;
     }
@@ -92,9 +94,9 @@ struct ClonePublicInterface : Substitution
     {
         TypeId result = clone(ty);
 
-        if (FunctionTypeVar* ftv = getMutable<FunctionTypeVar>(result))
+        if (FunctionType* ftv = getMutable<FunctionType>(result))
             ftv->level = TypeLevel{0, 0};
-        else if (TableTypeVar* ttv = getMutable<TableTypeVar>(result))
+        else if (TableType* ttv = getMutable<TableType>(result))
             ttv->level = TypeLevel{0, 0};
 
         return result;
@@ -117,7 +119,7 @@ struct ClonePublicInterface : Substitution
         else
         {
             module->errors.push_back(TypeError{module->scopes[0].first, UnificationTooComplex{}});
-            return singletonTypes->errorRecoveryType();
+            return builtinTypes->errorRecoveryType();
         }
     }
 
@@ -133,7 +135,7 @@ struct ClonePublicInterface : Substitution
         else
         {
             module->errors.push_back(TypeError{module->scopes[0].first, UnificationTooComplex{}});
-            return singletonTypes->errorRecoveryTypePack();
+            return builtinTypes->errorRecoveryTypePack();
         }
     }
 
@@ -178,9 +180,9 @@ Module::~Module()
     unfreeze(internalTypes);
 }
 
-void Module::clonePublicInterface(NotNull<SingletonTypes> singletonTypes, InternalErrorReporter& ice)
+void Module::clonePublicInterface(NotNull<BuiltinTypes> builtinTypes, InternalErrorReporter& ice)
 {
-    LUAU_ASSERT(interfaceTypes.typeVars.empty());
+    LUAU_ASSERT(interfaceTypes.types.empty());
     LUAU_ASSERT(interfaceTypes.typePacks.empty());
 
     CloneState cloneState;
@@ -189,10 +191,9 @@ void Module::clonePublicInterface(NotNull<SingletonTypes> singletonTypes, Intern
 
     TypePackId returnType = moduleScope->returnType;
     std::optional<TypePackId> varargPack = FFlag::DebugLuauDeferredConstraintResolution ? std::nullopt : moduleScope->varargPack;
-    std::unordered_map<Name, TypeFun>* exportedTypeBindings = &moduleScope->exportedTypeBindings;
 
     TxnLog log;
-    ClonePublicInterface clonePublicInterface{&log, singletonTypes, this};
+    ClonePublicInterface clonePublicInterface{&log, builtinTypes, this};
 
     if (FFlag::LuauClonePublicInterfaceLess)
         returnType = clonePublicInterface.cloneTypePack(returnType);
@@ -209,15 +210,12 @@ void Module::clonePublicInterface(NotNull<SingletonTypes> singletonTypes, Intern
         moduleScope->varargPack = varargPack;
     }
 
-    if (exportedTypeBindings)
+    for (auto& [name, tf] : moduleScope->exportedTypeBindings)
     {
-        for (auto& [name, tf] : *exportedTypeBindings)
-        {
-            if (FFlag::LuauClonePublicInterfaceLess)
-                tf = clonePublicInterface.cloneTypeFun(tf);
-            else
-                tf = clone(tf, interfaceTypes, cloneState);
-        }
+        if (FFlag::LuauClonePublicInterfaceLess)
+            tf = clonePublicInterface.cloneTypeFun(tf);
+        else
+            tf = clone(tf, interfaceTypes, cloneState);
     }
 
     for (auto& [name, ty] : declaredGlobals)
@@ -228,13 +226,25 @@ void Module::clonePublicInterface(NotNull<SingletonTypes> singletonTypes, Intern
             ty = clone(ty, interfaceTypes, cloneState);
     }
 
+    // Copy external stuff over to Module itself
+    if (FFlag::LuauScopelessModule)
+    {
+        this->returnType = moduleScope->returnType;
+        this->exportedTypeBindings = std::move(moduleScope->exportedTypeBindings);
+    }
+
     freeze(internalTypes);
     freeze(interfaceTypes);
 }
 
+bool Module::hasModuleScope() const
+{
+    return !scopes.empty();
+}
+
 ScopePtr Module::getModuleScope() const
 {
-    LUAU_ASSERT(!scopes.empty());
+    LUAU_ASSERT(hasModuleScope());
     return scopes.front().second;
 }
 

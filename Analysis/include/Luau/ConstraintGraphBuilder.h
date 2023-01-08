@@ -9,7 +9,7 @@
 #include "Luau/ModuleResolver.h"
 #include "Luau/NotNull.h"
 #include "Luau/Symbol.h"
-#include "Luau/TypeVar.h"
+#include "Luau/Type.h"
 #include "Luau/Variant.h"
 
 #include <memory>
@@ -61,7 +61,7 @@ struct ConstraintGraphBuilder
 
     ModuleName moduleName;
     ModulePtr module;
-    NotNull<SingletonTypes> singletonTypes;
+    NotNull<BuiltinTypes> builtinTypes;
     const NotNull<TypeArena> arena;
     // The root scope of the module we're generating constraints for.
     // This is null when the CGB is initially constructed.
@@ -82,11 +82,11 @@ struct ConstraintGraphBuilder
 
     // If the node was applied as a function, this is the unspecialized type of
     // that expression.
-    DenseHashMap<const AstExpr*, TypeId> astOriginalCallTypes{nullptr};
+    DenseHashMap<const void*, TypeId> astOriginalCallTypes{nullptr};
 
     // If overload resolution was performed on this element, this is the
     // overload that was selected.
-    DenseHashMap<const AstExpr*, TypeId> astOverloadResolvedTypes{nullptr};
+    DenseHashMap<const void*, TypeId> astOverloadResolvedTypes{nullptr};
 
     // Types resolved from type annotations. Analogous to astTypes.
     DenseHashMap<const AstType*, TypeId> astResolvedTypes{nullptr};
@@ -114,7 +114,7 @@ struct ConstraintGraphBuilder
     DcrLogger* logger;
 
     ConstraintGraphBuilder(const ModuleName& moduleName, ModulePtr module, TypeArena* arena, NotNull<ModuleResolver> moduleResolver,
-        NotNull<SingletonTypes> singletonTypes, NotNull<InternalErrorReporter> ice, const ScopePtr& globalScope, DcrLogger* logger,
+        NotNull<BuiltinTypes> builtinTypes, NotNull<InternalErrorReporter> ice, const ScopePtr& globalScope, DcrLogger* logger,
         NotNull<DataFlowGraph> dfg);
 
     /**

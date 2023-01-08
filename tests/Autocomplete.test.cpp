@@ -2,8 +2,8 @@
 #include "Luau/Autocomplete.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/TypeInfer.h"
-#include "Luau/TypeVar.h"
-#include "Luau/VisitTypeVar.h"
+#include "Luau/Type.h"
+#include "Luau/VisitType.h"
 #include "Luau/StringUtils.h"
 
 #include "Fixture.h"
@@ -18,7 +18,7 @@ LUAU_FASTFLAG(LuauSetMetatableDoesNotTimeTravel)
 
 using namespace Luau;
 
-static std::optional<AutocompleteEntryMap> nullCallback(std::string tag, std::optional<const ClassTypeVar*> ptr)
+static std::optional<AutocompleteEntryMap> nullCallback(std::string tag, std::optional<const ClassType*> ptr)
 {
     return std::nullopt;
 }
@@ -499,7 +499,7 @@ TEST_CASE_FIXTURE(ACFixture, "bias_toward_inner_scope")
     CHECK_EQ(ac.context, AutocompleteContext::Statement);
 
     TypeId t = follow(*ac.entryMap["A"].type);
-    const TableTypeVar* tt = get<TableTypeVar>(t);
+    const TableType* tt = get<TableType>(t);
     REQUIRE(tt);
 
     CHECK(tt->props.count("two"));
@@ -1244,7 +1244,7 @@ end
 
     REQUIRE(ac.entryMap.count("Table"));
     REQUIRE(ac.entryMap["Table"].type);
-    const TableTypeVar* tv = get<TableTypeVar>(follow(*ac.entryMap["Table"].type));
+    const TableType* tv = get<TableType>(follow(*ac.entryMap["Table"].type));
     REQUIRE(tv);
     CHECK(tv->props.count("x"));
 }
@@ -3329,6 +3329,38 @@ TEST_CASE_FIXTURE(ACFixture, "globals_are_order_independent")
     CHECK(ac.entryMap.count("myInnerLocal"));
     CHECK(ac.entryMap.count("abc0"));
     CHECK(ac.entryMap.count("abc1"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "type_reduction_is_hooked_up_to_autocomplete")
+{
+    check(R"(
+        type T = { x: (number & string)? }
+
+        function f(thingamabob: T)
+            thingamabob.@1
+        end
+
+        function g(thingamabob: T)
+            thingama@2
+        end
+    )");
+
+    ToStringOptions opts;
+    opts.exhaustive = true;
+
+    auto ac1 = autocomplete('1');
+    REQUIRE(ac1.entryMap.count("x"));
+    std::optional<TypeId> ty1 = ac1.entryMap.at("x").type;
+    REQUIRE(ty1);
+    CHECK("(number & string)?" == toString(*ty1, opts));
+    // CHECK("nil" == toString(*ty1, opts));
+
+    auto ac2 = autocomplete('2');
+    REQUIRE(ac2.entryMap.count("thingamabob"));
+    std::optional<TypeId> ty2 = ac2.entryMap.at("thingamabob").type;
+    REQUIRE(ty2);
+    CHECK("{| x: (number & string)? |}" == toString(*ty2, opts));
+    // CHECK("{| x: nil |}" == toString(*ty2, opts));
 }
 
 TEST_SUITE_END();

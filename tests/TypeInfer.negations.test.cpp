@@ -10,6 +10,7 @@ using namespace Luau;
 
 namespace
 {
+
 struct NegationFixture : Fixture
 {
     TypeArena arena;
@@ -19,9 +20,10 @@ struct NegationFixture : Fixture
 
     NegationFixture()
     {
-        registerHiddenTypes(*this, arena);
+        registerHiddenTypes(&frontend);
     }
 };
+
 } // namespace
 
 TEST_SUITE_BEGIN("Negations");

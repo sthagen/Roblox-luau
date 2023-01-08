@@ -456,7 +456,7 @@ TEST_CASE_FIXTURE(Fixture, "dcr_can_partially_dispatch_a_constraint")
     //
     //     (*blocked*) -> () <: (number) -> (b...)
     //
-    // We solve this by searching both types for BlockedTypeVars and block the
+    // We solve this by searching both types for BlockedTypes and block the
     // constraint on any we find.  It also gets the job done, but I'm worried
     // about the efficiency of doing so many deep type traversals and it may
     // make us more prone to getting stuck on constraint cycles.
@@ -473,19 +473,19 @@ TEST_CASE_FIXTURE(Fixture, "dcr_can_partially_dispatch_a_constraint")
 TEST_CASE_FIXTURE(Fixture, "free_options_cannot_be_unified_together")
 {
     TypeArena arena;
-    TypeId nilType = singletonTypes->nilType;
+    TypeId nilType = builtinTypes->nilType;
 
-    std::unique_ptr scope = std::make_unique<Scope>(singletonTypes->anyTypePack);
+    std::unique_ptr scope = std::make_unique<Scope>(builtinTypes->anyTypePack);
 
     TypeId free1 = arena.addType(FreeTypePack{scope.get()});
-    TypeId option1 = arena.addType(UnionTypeVar{{nilType, free1}});
+    TypeId option1 = arena.addType(UnionType{{nilType, free1}});
 
     TypeId free2 = arena.addType(FreeTypePack{scope.get()});
-    TypeId option2 = arena.addType(UnionTypeVar{{nilType, free2}});
+    TypeId option2 = arena.addType(UnionType{{nilType, free2}});
 
     InternalErrorReporter iceHandler;
     UnifierSharedState sharedState{&iceHandler};
-    Normalizer normalizer{&arena, singletonTypes, NotNull{&sharedState}};
+    Normalizer normalizer{&arena, builtinTypes, NotNull{&sharedState}};
     Unifier u{NotNull{&normalizer}, Mode::Strict, NotNull{scope.get()}, Location{}, Variance::Covariant};
 
     u.tryUnify(option1, option2);
@@ -516,6 +516,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "for_in_loop_with_zero_iterators")
 // Ideally, we would not try to export a function type with generic types from incorrect scope
 TEST_CASE_FIXTURE(BuiltinsFixture, "generic_type_leak_to_module_interface")
 {
+    ScopedFastFlag luauScopelessModule{"LuauScopelessModule", true};
+
     fileResolver.source["game/A"] = R"(
 local wrapStrictTable
 
@@ -548,13 +550,15 @@ return wrapStrictTable(Constants, "Constants")
     ModulePtr m = frontend.moduleResolver.modules["game/B"];
     REQUIRE(m);
 
-    std::optional<TypeId> result = first(m->getModuleScope()->returnType);
+    std::optional<TypeId> result = first(m->returnType);
     REQUIRE(result);
-    CHECK(get<AnyTypeVar>(*result));
+    CHECK(get<AnyType>(*result));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "generic_type_leak_to_module_interface_variadic")
 {
+    ScopedFastFlag luauScopelessModule{"LuauScopelessModule", true};
+
     fileResolver.source["game/A"] = R"(
 local wrapStrictTable
 
@@ -587,9 +591,9 @@ return wrapStrictTable(Constants, "Constants")
     ModulePtr m = frontend.moduleResolver.modules["game/B"];
     REQUIRE(m);
 
-    std::optional<TypeId> result = first(m->getModuleScope()->returnType);
+    std::optional<TypeId> result = first(m->returnType);
     REQUIRE(result);
-    CHECK(get<AnyTypeVar>(*result));
+    CHECK(get<AnyType>(*result));
 }
 
 // We need a simplification step to make this do the right thing. ("normalization-lite")
@@ -620,7 +624,13 @@ struct IsSubtypeFixture : Fixture
 {
     bool isSubtype(TypeId a, TypeId b)
     {
-        return ::Luau::isSubtype(a, b, NotNull{getMainModule()->getModuleScope().get()}, singletonTypes, ice);
+        ModulePtr module = getMainModule();
+        REQUIRE(module);
+
+        if (!module->hasModuleScope())
+            FAIL("isSubtype: module scope data is not available");
+
+        return ::Luau::isSubtype(a, b, NotNull{module->getModuleScope().get()}, builtinTypes, ice);
     }
 };
 } // namespace

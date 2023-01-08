@@ -5,8 +5,8 @@
 #include "Luau/Error.h"
 #include "Luau/Scope.h"
 #include "Luau/TypeInfer.h"
-#include "Luau/TypeVar.h"
-#include "Luau/VisitTypeVar.h"
+#include "Luau/Type.h"
+#include "Luau/VisitType.h"
 
 #include "Fixture.h"
 
@@ -23,7 +23,7 @@ TEST_CASE_FIXTURE(Fixture, "tc_function")
     CheckResult result = check("function five() return 5 end");
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    const FunctionTypeVar* fiveType = get<FunctionTypeVar>(requireType("five"));
+    const FunctionType* fiveType = get<FunctionType>(requireType("five"));
     REQUIRE(fiveType != nullptr);
 }
 
@@ -64,7 +64,7 @@ TEST_CASE_FIXTURE(Fixture, "infer_return_type")
     CheckResult result = check("function take_five() return 5 end");
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    const FunctionTypeVar* takeFiveType = get<FunctionTypeVar>(requireType("take_five"));
+    const FunctionType* takeFiveType = get<FunctionType>(requireType("take_five"));
     REQUIRE(takeFiveType != nullptr);
 
     std::vector<TypeId> retVec = flatten(takeFiveType->retTypes).first;
@@ -109,6 +109,8 @@ TEST_CASE_FIXTURE(Fixture, "vararg_functions_should_allow_calls_of_any_types_and
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "vararg_function_is_quantified")
 {
+    ScopedFastFlag luauScopelessModule{"LuauScopelessModule", true};
+
     CheckResult result = check(R"(
         local T = {}
         function T.f(...)
@@ -129,10 +131,10 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "vararg_function_is_quantified")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    auto r = first(getMainModule()->getModuleScope()->returnType);
+    auto r = first(getMainModule()->returnType);
     REQUIRE(r);
 
-    TableTypeVar* ttv = getMutable<TableTypeVar>(*r);
+    TableType* ttv = getMutable<TableType>(*r);
     REQUIRE(ttv);
 
     REQUIRE(ttv->props.count("f"));
@@ -389,14 +391,14 @@ TEST_CASE_FIXTURE(Fixture, "local_function")
 
     TypeId h = follow(requireType("h"));
 
-    const FunctionTypeVar* ftv = get<FunctionTypeVar>(h);
+    const FunctionType* ftv = get<FunctionType>(h);
     REQUIRE(ftv != nullptr);
 
     std::optional<TypeId> rt = first(ftv->retTypes);
     REQUIRE(bool(rt));
 
     TypeId retType = follow(*rt);
-    CHECK_EQ(PrimitiveTypeVar::String, getPrimitiveType(retType));
+    CHECK_EQ(PrimitiveType::String, getPrimitiveType(retType));
 }
 
 TEST_CASE_FIXTURE(Fixture, "func_expr_doesnt_leak_free")
@@ -406,11 +408,11 @@ TEST_CASE_FIXTURE(Fixture, "func_expr_doesnt_leak_free")
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
-    const Luau::FunctionTypeVar* fn = get<FunctionTypeVar>(requireType("p"));
+    const Luau::FunctionType* fn = get<FunctionType>(requireType("p"));
     REQUIRE(fn);
     auto ret = first(fn->retTypes);
     REQUIRE(ret);
-    REQUIRE(get<GenericTypeVar>(follow(*ret)));
+    REQUIRE(get<GenericType>(follow(*ret)));
 }
 
 TEST_CASE_FIXTURE(Fixture, "first_argument_can_be_optional")
@@ -506,12 +508,12 @@ TEST_CASE_FIXTURE(Fixture, "complicated_return_types_require_an_explicit_annotat
     LUAU_REQUIRE_NO_ERRORS(result);
 
     TypeId ty = requireType("most_of_the_natural_numbers");
-    const FunctionTypeVar* functionType = get<FunctionTypeVar>(ty);
+    const FunctionType* functionType = get<FunctionType>(ty);
     REQUIRE_MESSAGE(functionType, "Expected function but got " << toString(ty));
 
     std::optional<TypeId> retType = first(functionType->retTypes);
     REQUIRE(retType);
-    CHECK(get<UnionTypeVar>(*retType));
+    CHECK(get<UnionType>(*retType));
 }
 
 TEST_CASE_FIXTURE(Fixture, "infer_higher_order_function")
@@ -524,14 +526,14 @@ TEST_CASE_FIXTURE(Fixture, "infer_higher_order_function")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    const FunctionTypeVar* ftv = get<FunctionTypeVar>(requireType("apply"));
+    const FunctionType* ftv = get<FunctionType>(requireType("apply"));
     REQUIRE(ftv != nullptr);
 
     std::vector<TypeId> argVec = flatten(ftv->argTypes).first;
 
     REQUIRE_EQ(2, argVec.size());
 
-    const FunctionTypeVar* fType = get<FunctionTypeVar>(follow(argVec[0]));
+    const FunctionType* fType = get<FunctionType>(follow(argVec[0]));
     REQUIRE_MESSAGE(fType != nullptr, "Expected a function but got " << toString(argVec[0]));
 
     std::vector<TypeId> fArgs = flatten(fType->argTypes).first;
@@ -561,14 +563,14 @@ TEST_CASE_FIXTURE(Fixture, "higher_order_function_2")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    const FunctionTypeVar* ftv = get<FunctionTypeVar>(requireType("bottomupmerge"));
+    const FunctionType* ftv = get<FunctionType>(requireType("bottomupmerge"));
     REQUIRE(ftv != nullptr);
 
     std::vector<TypeId> argVec = flatten(ftv->argTypes).first;
 
     REQUIRE_EQ(6, argVec.size());
 
-    const FunctionTypeVar* fType = get<FunctionTypeVar>(follow(argVec[0]));
+    const FunctionType* fType = get<FunctionType>(follow(argVec[0]));
     REQUIRE(fType != nullptr);
 }
 
@@ -591,14 +593,14 @@ TEST_CASE_FIXTURE(Fixture, "higher_order_function_3")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    const FunctionTypeVar* ftv = get<FunctionTypeVar>(requireType("swapTwice"));
+    const FunctionType* ftv = get<FunctionType>(requireType("swapTwice"));
     REQUIRE(ftv != nullptr);
 
     std::vector<TypeId> argVec = flatten(ftv->argTypes).first;
 
     REQUIRE_EQ(1, argVec.size());
 
-    const TableTypeVar* argType = get<TableTypeVar>(follow(argVec[0]));
+    const TableType* argType = get<TableType>(follow(argVec[0]));
     REQUIRE(argType != nullptr);
 
     CHECK(bool(argType->indexer));
@@ -648,18 +650,18 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "higher_order_function_4")
      * In other words, comp(arr[x], arr[y]) is well-typed.
      */
 
-    const FunctionTypeVar* ftv = get<FunctionTypeVar>(requireType("mergesort"));
+    const FunctionType* ftv = get<FunctionType>(requireType("mergesort"));
     REQUIRE(ftv != nullptr);
 
     std::vector<TypeId> argVec = flatten(ftv->argTypes).first;
 
     REQUIRE_EQ(2, argVec.size());
 
-    const TableTypeVar* arg0 = get<TableTypeVar>(follow(argVec[0]));
+    const TableType* arg0 = get<TableType>(follow(argVec[0]));
     REQUIRE(arg0 != nullptr);
     REQUIRE(bool(arg0->indexer));
 
-    const FunctionTypeVar* arg1 = get<FunctionTypeVar>(follow(argVec[1]));
+    const FunctionType* arg1 = get<FunctionType>(follow(argVec[1]));
     REQUIRE(arg1 != nullptr);
     REQUIRE_EQ(2, size(arg1->argTypes));
 
@@ -1003,7 +1005,7 @@ TEST_CASE_FIXTURE(Fixture, "no_lossy_function_type")
     LUAU_REQUIRE_NO_ERRORS(result);
     TypeId type = requireTypeAtPosition(Position(6, 14));
     CHECK_EQ("(tbl, number, number) -> number", toString(type));
-    auto ftv = get<FunctionTypeVar>(type);
+    auto ftv = get<FunctionType>(type);
     REQUIRE(ftv);
     CHECK(ftv->hasSelf);
 }
@@ -1772,7 +1774,7 @@ z = y -- Not OK, so the line is colorable
 TEST_CASE_FIXTURE(Fixture, "function_is_supertype_of_concrete_functions")
 {
     ScopedFastFlag sff{"LuauNegatedFunctionTypes", true};
-    registerHiddenTypes(*this, frontend.globalTypes);
+    registerHiddenTypes(&frontend);
 
     CheckResult result = check(R"(
         function foo(f: fun) end
@@ -1791,7 +1793,7 @@ TEST_CASE_FIXTURE(Fixture, "function_is_supertype_of_concrete_functions")
 TEST_CASE_FIXTURE(Fixture, "concrete_functions_are_not_supertypes_of_function")
 {
     ScopedFastFlag sff{"LuauNegatedFunctionTypes", true};
-    registerHiddenTypes(*this, frontend.globalTypes);
+    registerHiddenTypes(&frontend);
 
     CheckResult result = check(R"(
         local a: fun = function() end
@@ -1812,7 +1814,7 @@ TEST_CASE_FIXTURE(Fixture, "concrete_functions_are_not_supertypes_of_function")
 TEST_CASE_FIXTURE(Fixture, "other_things_are_not_related_to_function")
 {
     ScopedFastFlag sff{"LuauNegatedFunctionTypes", true};
-    registerHiddenTypes(*this, frontend.globalTypes);
+    registerHiddenTypes(&frontend);
 
     CheckResult result = check(R"(
         local a: fun = function() end

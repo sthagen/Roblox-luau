@@ -5,7 +5,7 @@
 #include "Luau/Def.h"
 #include "Luau/DenseHash.h"
 #include "Luau/NotNull.h"
-#include "Luau/TypeVar.h"
+#include "Luau/Type.h"
 #include "Luau/Variant.h"
 
 #include <string>
@@ -17,8 +17,8 @@ namespace Luau
 
 struct Scope;
 
-struct TypeVar;
-using TypeId = const TypeVar*;
+struct Type;
+using TypeId = const Type*;
 
 struct TypePackVar;
 using TypePackId = const TypePackVar*;
@@ -71,9 +71,9 @@ struct BinaryConstraint
 
     // When we dispatch this constraint, we update the key at this map to record
     // the overload that we selected.
-    AstExpr* expr;
-    DenseHashMap<const AstExpr*, TypeId>* astOriginalCallTypes;
-    DenseHashMap<const AstExpr*, TypeId>* astOverloadResolvedTypes;
+    const void* astFragment;
+    DenseHashMap<const void*, TypeId>* astOriginalCallTypes;
+    DenseHashMap<const void*, TypeId>* astOverloadResolvedTypes;
 };
 
 // iteratee is iterable
@@ -94,7 +94,7 @@ struct NameConstraint
 // target ~ inst target
 struct TypeAliasExpansionConstraint
 {
-    // Must be a PendingExpansionTypeVar.
+    // Must be a PendingExpansionType.
     TypeId target;
 };
 
