@@ -13,6 +13,7 @@
 #include <utility>
 
 LUAU_FASTFLAGVARIABLE(LuauCompleteTableKeysBetter, false);
+LUAU_FASTFLAGVARIABLE(LuauFixAutocompleteInIf, false);
 
 static const std::unordered_set<std::string> kStatementStartingKeywords = {
     "while", "if", "local", "repeat", "function", "do", "for", "return", "break", "continue", "type", "export"};
@@ -1262,6 +1263,23 @@ static bool isSimpleInterpolatedString(const AstNode* node)
     return interpString != nullptr && interpString->expressions.size == 0;
 }
 
+static std::optional<std::string> getStringContents(const AstNode* node)
+{
+    if (const AstExprConstantString* string = node->as<AstExprConstantString>())
+    {
+        return std::string(string->value.data, string->value.size);
+    }
+    else if (const AstExprInterpString* interpString = node->as<AstExprInterpString>(); interpString && interpString->expressions.size == 0)
+    {
+        LUAU_ASSERT(interpString->strings.size == 1);
+        return std::string(interpString->strings.data->data, interpString->strings.data->size);
+    }
+    else
+    {
+        return std::nullopt;
+    }
+}
+
 static std::optional<AutocompleteEntryMap> autocompleteStringParams(const SourceModule& sourceModule, const ModulePtr& module,
     const std::vector<AstNode*>& nodes, Position position, StringCompletionCallback callback)
 {
@@ -1294,10 +1312,13 @@ static std::optional<AutocompleteEntryMap> autocompleteStringParams(const Source
         return std::nullopt;
     }
 
-    auto performCallback = [&](const FunctionType* funcType) -> std::optional<AutocompleteEntryMap> {
+    std::optional<std::string> candidateString = getStringContents(nodes.back());
+
+    auto performCallback = [&](const FunctionType* funcType) -> std::optional<AutocompleteEntryMap>
+    {
         for (const std::string& tag : funcType->tags)
         {
-            if (std::optional<AutocompleteEntryMap> ret = callback(tag, getMethodContainingClass(module, candidate->func)))
+            if (std::optional<AutocompleteEntryMap> ret = callback(tag, getMethodContainingClass(module, candidate->func), candidateString))
             {
                 return ret;
             }
@@ -1467,8 +1488,22 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
             return {{{"then", AutocompleteEntry{AutocompleteEntryKind::Keyword}}}, ancestry, AutocompleteContext::Keyword};
     }
     else if (AstStatIf* statIf = extractStat<AstStatIf>(ancestry);
-             statIf && (!statIf->thenLocation || statIf->thenLocation->containsClosed(position)))
-        return {{{"then", AutocompleteEntry{AutocompleteEntryKind::Keyword}}}, ancestry, AutocompleteContext::Keyword};
+             statIf && (!statIf->thenLocation || statIf->thenLocation->containsClosed(position)) && 
+             (!FFlag::LuauFixAutocompleteInIf || (statIf->condition && !statIf->condition->location.containsClosed(position))))
+    {
+        if (FFlag::LuauFixAutocompleteInIf)
+        {
+            AutocompleteEntryMap ret;
+            ret["then"] = {AutocompleteEntryKind::Keyword};
+            ret["and"] = {AutocompleteEntryKind::Keyword};
+            ret["or"] = {AutocompleteEntryKind::Keyword};
+            return {std::move(ret), ancestry, AutocompleteContext::Keyword};
+        }
+        else
+        {
+            return {{{"then", AutocompleteEntry{AutocompleteEntryKind::Keyword}}}, ancestry, AutocompleteContext::Keyword};
+        }
+    }
     else if (AstStatRepeat* statRepeat = node->as<AstStatRepeat>(); statRepeat && statRepeat->condition->is<AstExprError>())
         return autocompleteExpression(sourceModule, *module, builtinTypes, typeArena, ancestry, position);
     else if (AstStatRepeat* statRepeat = extractStat<AstStatRepeat>(ancestry); statRepeat)

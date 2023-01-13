@@ -15,10 +15,11 @@
 
 LUAU_FASTFLAG(LuauTraceTypesInNonstrictMode2)
 LUAU_FASTFLAG(LuauSetMetatableDoesNotTimeTravel)
+LUAU_FASTFLAG(LuauFixAutocompleteInIf)
 
 using namespace Luau;
 
-static std::optional<AutocompleteEntryMap> nullCallback(std::string tag, std::optional<const ClassType*> ptr)
+static std::optional<AutocompleteEntryMap> nullCallback(std::string tag, std::optional<const ClassType*> ptr, std::optional<std::string> contents)
 {
     return std::nullopt;
 }
@@ -36,9 +37,9 @@ struct ACFixtureImpl : BaseType
         return Luau::autocomplete(this->frontend, "MainModule", Position{row, column}, nullCallback);
     }
 
-    AutocompleteResult autocomplete(char marker)
+    AutocompleteResult autocomplete(char marker, StringCompletionCallback callback = nullCallback)
     {
-        return Luau::autocomplete(this->frontend, "MainModule", getPosition(marker), nullCallback);
+        return Luau::autocomplete(this->frontend, "MainModule", getPosition(marker), callback);
     }
 
     CheckResult check(const std::string& source)
@@ -789,14 +790,30 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_if_middle_keywords")
     CHECK_EQ(ac2.entryMap.count("end"), 0);
     CHECK_EQ(ac2.context, AutocompleteContext::Keyword);
 
-    check(R"(
-        if x t@1
-    )");
+    if (FFlag::LuauFixAutocompleteInIf)
+    {
+        check(R"(
+            if x t@1
+        )");
 
-    auto ac3 = autocomplete('1');
-    CHECK_EQ(1, ac3.entryMap.size());
-    CHECK_EQ(ac3.entryMap.count("then"), 1);
-    CHECK_EQ(ac3.context, AutocompleteContext::Keyword);
+        auto ac3 = autocomplete('1');
+        CHECK_EQ(3, ac3.entryMap.size());
+        CHECK_EQ(ac3.entryMap.count("then"), 1);
+        CHECK_EQ(ac3.entryMap.count("and"), 1);
+        CHECK_EQ(ac3.entryMap.count("or"), 1);
+        CHECK_EQ(ac3.context, AutocompleteContext::Keyword);
+    }
+    else
+    {
+        check(R"(
+            if x t@1
+        )");
+
+        auto ac3 = autocomplete('1');
+        CHECK_EQ(1, ac3.entryMap.size());
+        CHECK_EQ(ac3.entryMap.count("then"), 1);
+        CHECK_EQ(ac3.context, AutocompleteContext::Keyword);
+    }
 
     check(R"(
         if x then
@@ -839,6 +856,23 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_if_middle_keywords")
     CHECK_EQ(ac5.entryMap.count("elseif"), 0);
     CHECK_EQ(ac5.entryMap.count("end"), 0);
     CHECK_EQ(ac5.context, AutocompleteContext::Statement);
+    
+    if (FFlag::LuauFixAutocompleteInIf)
+    {
+        check(R"(
+            if t@1
+        )");
+
+        auto ac6 = autocomplete('1');
+        CHECK_EQ(ac6.entryMap.count("true"), 1);
+        CHECK_EQ(ac6.entryMap.count("false"), 1);
+        CHECK_EQ(ac6.entryMap.count("then"), 0);
+        CHECK_EQ(ac6.entryMap.count("function"), 1);
+        CHECK_EQ(ac6.entryMap.count("else"), 0);
+        CHECK_EQ(ac6.entryMap.count("elseif"), 0);
+        CHECK_EQ(ac6.entryMap.count("end"), 0);
+        CHECK_EQ(ac6.context, AutocompleteContext::Expression);
+    }
 }
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_until_in_repeat")
@@ -3361,6 +3395,33 @@ TEST_CASE_FIXTURE(ACFixture, "type_reduction_is_hooked_up_to_autocomplete")
     REQUIRE(ty2);
     CHECK("{| x: (number & string)? |}" == toString(*ty2, opts));
     // CHECK("{| x: nil |}" == toString(*ty2, opts));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "string_contents_is_available_to_callback")
+{
+    loadDefinition(R"(
+        declare function require(path: string): any
+    )");
+
+    std::optional<Binding> require = frontend.typeCheckerForAutocomplete.globalScope->linearSearchForBinding("require");
+    REQUIRE(require);
+    Luau::unfreeze(frontend.typeCheckerForAutocomplete.globalTypes);
+    attachTag(require->typeId, "RequireCall");
+    Luau::freeze(frontend.typeCheckerForAutocomplete.globalTypes);
+
+    check(R"(
+        local x = require("testing/@1")
+    )");
+
+    bool isCorrect = false;
+    auto ac1 = autocomplete('1',
+        [&isCorrect](std::string, std::optional<const ClassType*>, std::optional<std::string> contents) -> std::optional<AutocompleteEntryMap>
+        {
+            isCorrect = contents.has_value() && contents.value() == "testing/";
+            return std::nullopt;
+        });
+
+    CHECK(isCorrect);
 }
 
 TEST_SUITE_END();
