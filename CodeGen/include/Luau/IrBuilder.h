@@ -3,8 +3,7 @@
 
 #include "Luau/Common.h"
 #include "Luau/Bytecode.h"
-
-#include "IrData.h"
+#include "Luau/IrData.h"
 
 #include <vector>
 
@@ -50,6 +49,8 @@ struct IrBuilder
     IrOp vmReg(uint8_t index);
     IrOp vmConst(uint32_t index);
     IrOp vmUpvalue(uint8_t index);
+
+    bool inTerminatedBlock = false;
 
     bool activeFastcallFallback = false;
     IrOp fastcallFallbackReturn;

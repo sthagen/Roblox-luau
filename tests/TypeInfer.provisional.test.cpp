@@ -514,8 +514,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "for_in_loop_with_zero_iterators")
 // Ideally, we would not try to export a function type with generic types from incorrect scope
 TEST_CASE_FIXTURE(BuiltinsFixture, "generic_type_leak_to_module_interface")
 {
-    ScopedFastFlag luauScopelessModule{"LuauScopelessModule", true};
-
     fileResolver.source["game/A"] = R"(
 local wrapStrictTable
 
@@ -555,8 +553,6 @@ return wrapStrictTable(Constants, "Constants")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "generic_type_leak_to_module_interface_variadic")
 {
-    ScopedFastFlag luauScopelessModule{"LuauScopelessModule", true};
-
     fileResolver.source["game/A"] = R"(
 local wrapStrictTable
 
@@ -592,28 +588,6 @@ return wrapStrictTable(Constants, "Constants")
     std::optional<TypeId> result = first(m->returnType);
     REQUIRE(result);
     CHECK(get<AnyType>(*result));
-}
-
-// We need a simplification step to make this do the right thing. ("normalization-lite")
-TEST_CASE_FIXTURE(BuiltinsFixture, "table_insert_with_a_singleton_argument")
-{
-    CheckResult result = check(R"(
-        local function foo(t, x)
-            if x == "hi" or x == "bye" then
-                table.insert(t, x)
-            end
-
-            return t
-        end
-
-        local t = foo({}, "hi")
-        table.insert(t, "totally_unrelated_type" :: "totally_unrelated_type")
-    )");
-
-    LUAU_REQUIRE_NO_ERRORS(result);
-
-    // We'd really like for this to be {string}
-    CHECK_EQ("{string | string}", toString(requireType("t")));
 }
 
 namespace
@@ -812,6 +786,46 @@ caused by:
   Property 'x' is not compatible. Type 'number?' could not be converted into 'number')",
             toString(result.errors[0]));
     }
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "table_insert_with_a_singleton_argument")
+{
+    CheckResult result = check(R"(
+        local function foo(t, x)
+            if x == "hi" or x == "bye" then
+                table.insert(t, x)
+            end
+
+            return t
+        end
+
+        local t = foo({}, "hi")
+        table.insert(t, "totally_unrelated_type" :: "totally_unrelated_type")
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{string}", toString(requireType("t")));
+    else
+    {
+        // We'd really like for this to be {string}
+        CHECK_EQ("{string | string}", toString(requireType("t")));
+    }
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "refine_unknown_to_table_then_clone_it")
+{
+    CheckResult result = check(R"(
+        local function f(x: unknown)
+            if typeof(x) == "table" then
+                local cloned: {} = table.clone(x)
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    // LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_SUITE_END();

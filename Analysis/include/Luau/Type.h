@@ -3,7 +3,7 @@
 
 #include "Luau/Ast.h"
 #include "Luau/Common.h"
-#include "Luau/Connective.h"
+#include "Luau/Refinement.h"
 #include "Luau/DataFlowGraph.h"
 #include "Luau/DenseHash.h"
 #include "Luau/Def.h"
@@ -263,15 +263,12 @@ using DcrMagicFunction = bool (*)(MagicFunctionCallContext);
 
 struct MagicRefinementContext
 {
-    ScopePtr scope;
-    NotNull<struct ConstraintGraphBuilder> cgb;
-    NotNull<const DataFlowGraph> dfg;
-    NotNull<ConnectiveArena> connectiveArena;
-    std::vector<ConnectiveId> argumentConnectives;
+    NotNull<Scope> scope;
     const class AstExprCall* callSite;
+    std::vector<std::optional<TypeId>> discriminantTypes;
 };
 
-using DcrMagicRefinement = std::vector<ConnectiveId> (*)(const MagicRefinementContext&);
+using DcrMagicRefinement = void (*)(const MagicRefinementContext&);
 
 struct FunctionType
 {
@@ -304,8 +301,8 @@ struct FunctionType
     TypePackId argTypes;
     TypePackId retTypes;
     MagicFunction magicFunction = nullptr;
-    DcrMagicFunction dcrMagicFunction = nullptr;     // Fired only while solving constraints
-    DcrMagicRefinement dcrMagicRefinement = nullptr; // Fired only while generating constraints
+    DcrMagicFunction dcrMagicFunction = nullptr;
+    DcrMagicRefinement dcrMagicRefinement = nullptr;
     bool hasSelf;
     bool hasNoGenerics = false;
 };

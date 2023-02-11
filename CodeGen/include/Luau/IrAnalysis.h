@@ -8,7 +8,9 @@ namespace CodeGen
 
 struct IrFunction;
 
-void updateUseInfo(IrFunction& function);
+void updateUseCounts(IrFunction& function);
+
+void updateLastUseLocations(IrFunction& function);
 
 } // namespace CodeGen
 } // namespace Luau

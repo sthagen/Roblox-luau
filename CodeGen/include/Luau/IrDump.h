@@ -1,7 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
-#include "IrData.h"
+#include "Luau/IrData.h"
 
 #include <string>
 #include <vector>
@@ -21,12 +21,16 @@ struct IrToStringContext
     std::vector<IrConst>& constants;
 };
 
-void toString(IrToStringContext& ctx, IrInst inst, uint32_t index);
+void toString(IrToStringContext& ctx, const IrInst& inst, uint32_t index);
+void toString(IrToStringContext& ctx, const IrBlock& block, uint32_t index); // Block title
 void toString(IrToStringContext& ctx, IrOp op);
 
 void toString(std::string& result, IrConst constant);
 
-void toStringDetailed(IrToStringContext& ctx, IrInst inst, uint32_t index);
+void toStringDetailed(IrToStringContext& ctx, const IrInst& inst, uint32_t index);
+void toStringDetailed(IrToStringContext& ctx, const IrBlock& block, uint32_t index); // Block title
+
+std::string toString(IrFunction& function, bool includeDetails);
 
 std::string dump(IrFunction& function);
 

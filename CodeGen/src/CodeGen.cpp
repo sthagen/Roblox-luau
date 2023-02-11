@@ -5,6 +5,9 @@
 #include "Luau/Common.h"
 #include "Luau/CodeAllocator.h"
 #include "Luau/CodeBlockUnwind.h"
+#include "Luau/IrAnalysis.h"
+#include "Luau/IrBuilder.h"
+#include "Luau/OptimizeFinalX64.h"
 #include "Luau/UnwindBuilder.h"
 #include "Luau/UnwindBuilderDwarf2.h"
 #include "Luau/UnwindBuilderWin.h"
@@ -13,8 +16,6 @@
 #include "CodeGenX64.h"
 #include "EmitCommonX64.h"
 #include "EmitInstructionX64.h"
-#include "IrAnalysis.h"
-#include "IrBuilder.h"
 #include "IrLoweringX64.h"
 #include "NativeState.h"
 
@@ -431,7 +432,7 @@ static NativeProto* assembleFunction(AssemblyBuilderX64& build, NativeState& dat
         IrBuilder builder;
         builder.buildFunctionIr(proto);
 
-        updateUseInfo(builder.function);
+        optimizeMemoryOperandsX64(builder.function);
 
         IrLoweringX64 lowering(build, helpers, data, proto, builder.function);
 
