@@ -8,7 +8,6 @@
 #include "Luau/Scope.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/Variant.h"
-
 #include <string>
 #include <vector>
 #include <optional>
@@ -36,9 +35,6 @@ struct LoadDefinitionFileResult
     ModulePtr module;
 };
 
-LoadDefinitionFileResult loadDefinitionFile(TypeChecker& typeChecker, GlobalTypes& globals, ScopePtr targetScope, std::string_view definition,
-    const std::string& packageName, bool captureComments);
-
 std::optional<Mode> parseMode(const std::vector<HotComment>& hotcomments);
 
 std::vector<std::string_view> parsePathExpr(const AstExpr& pathExpr);
@@ -55,7 +51,9 @@ std::optional<ModuleName> pathExprToModuleName(const ModuleName& currentModuleNa
  * error when we try during typechecking.
  */
 std::optional<ModuleName> pathExprToModuleName(const ModuleName& currentModuleName, const AstExpr& expr);
-
+// TODO: Deprecate this code path when we move away from the old solver
+LoadDefinitionFileResult loadDefinitionFileNoDCR(TypeChecker& typeChecker, GlobalTypes& globals, ScopePtr targetScope, std::string_view definition,
+    const std::string& packageName, bool captureComments);
 struct SourceNode
 {
     bool hasDirtySourceModule() const
@@ -140,10 +138,6 @@ struct Frontend
 
     CheckResult check(const ModuleName& name, std::optional<FrontendOptions> optionOverride = {}); // new shininess
 
-    // Use 'check' with 'runLintChecks' set to true in FrontendOptions (enabledLintWarnings be set there as well)
-    LintResult lint_DEPRECATED(const ModuleName& name, std::optional<LintOptions> enabledLintWarnings = {});
-    LintResult lint_DEPRECATED(const SourceModule& module, std::optional<LintOptions> enabledLintWarnings = {});
-
     bool isDirty(const ModuleName& name, bool forAutocomplete = false) const;
     void markDirty(const ModuleName& name, std::vector<ModuleName>* markedDirty = nullptr);
 
@@ -164,13 +158,22 @@ struct Frontend
     ScopePtr addEnvironment(const std::string& environmentName);
     ScopePtr getEnvironmentScope(const std::string& environmentName) const;
 
-    void registerBuiltinDefinition(const std::string& name, std::function<void(TypeChecker&, GlobalTypes&, ScopePtr)>);
+    void registerBuiltinDefinition(const std::string& name, std::function<void(Frontend&, GlobalTypes&, ScopePtr)>);
     void applyBuiltinDefinitionToEnvironment(const std::string& environmentName, const std::string& definitionName);
 
-    LoadDefinitionFileResult loadDefinitionFile(std::string_view source, const std::string& packageName, bool captureComments);
+    LoadDefinitionFileResult loadDefinitionFile(GlobalTypes& globals, ScopePtr targetScope, std::string_view source, const std::string& packageName,
+        bool captureComments, bool typeCheckForAutocomplete = false);
 
 private:
-    ModulePtr check(const SourceModule& sourceModule, Mode mode, std::vector<RequireCycle> requireCycles, bool forAutocomplete = false, bool recordJsonLog = false);
+    struct TypeCheckLimits
+    {
+        std::optional<double> finishTime;
+        std::optional<int> instantiationChildLimit;
+        std::optional<int> unifierIterationLimit;
+    };
+
+    ModulePtr check(const SourceModule& sourceModule, Mode mode, std::vector<RequireCycle> requireCycles, std::optional<ScopePtr> environmentScope,
+        bool forAutocomplete, bool recordJsonLog, TypeCheckLimits typeCheckLimits);
 
     std::pair<SourceNode*, SourceModule*> getSourceNode(const ModuleName& name);
     SourceModule parse(const ModuleName& name, std::string_view src, const ParseOptions& parseOptions);
@@ -182,7 +185,7 @@ private:
     ScopePtr getModuleEnvironment(const SourceModule& module, const Config& config, bool forAutocomplete) const;
 
     std::unordered_map<std::string, ScopePtr> environments;
-    std::unordered_map<std::string, std::function<void(TypeChecker&, GlobalTypes&, ScopePtr)>> builtinDefinitions;
+    std::unordered_map<std::string, std::function<void(Frontend&, GlobalTypes&, ScopePtr)>> builtinDefinitions;
 
     BuiltinTypes builtinTypes_;
 
@@ -190,15 +193,21 @@ public:
     const NotNull<BuiltinTypes> builtinTypes;
 
     FileResolver* fileResolver;
+
     FrontendModuleResolver moduleResolver;
     FrontendModuleResolver moduleResolverForAutocomplete;
+
     GlobalTypes globals;
     GlobalTypes globalsForAutocomplete;
-    TypeChecker typeChecker;
-    TypeChecker typeCheckerForAutocomplete;
+
+    // TODO: remove with FFlagLuauOnDemandTypecheckers
+    TypeChecker typeChecker_DEPRECATED;
+    TypeChecker typeCheckerForAutocomplete_DEPRECATED;
+
     ConfigResolver* configResolver;
     FrontendOptions options;
     InternalErrorReporter iceHandler;
+    std::function<void(const ModuleName& name, const ScopePtr& scope, bool forAutocomplete)> prepareModuleScope;
 
     std::unordered_map<ModuleName, SourceNode> sourceNodes;
     std::unordered_map<ModuleName, SourceModule> sourceModules;

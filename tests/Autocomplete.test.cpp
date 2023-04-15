@@ -85,8 +85,8 @@ struct ACFixtureImpl : BaseType
     {
         GlobalTypes& globals = this->frontend.globalsForAutocomplete;
         unfreeze(globals.globalTypes);
-        LoadDefinitionFileResult result =
-            loadDefinitionFile(this->frontend.typeChecker, globals, globals.globalScope, source, "@test", /* captureComments */ false);
+        LoadDefinitionFileResult result = this->frontend.loadDefinitionFile(
+            globals, globals.globalScope, source, "@test", /* captureComments */ false, /* typeCheckForAutocomplete */ true);
         freeze(globals.globalTypes);
 
         REQUIRE_MESSAGE(result.success, "loadDefinition: unable to load definition file");
@@ -3448,8 +3448,6 @@ TEST_CASE_FIXTURE(ACFixture, "string_contents_is_available_to_callback")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_response_perf1" * doctest::timeout(0.5))
 {
-    ScopedFastFlag luauAutocompleteSkipNormalization{"LuauAutocompleteSkipNormalization", true};
-
     // Build a function type with a large overload set
     const int parts = 100;
     std::string source;
@@ -3473,6 +3471,36 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_response_perf1" * doctest::timeout(0.
 
     CHECK(ac.entryMap.count("true"));
     CHECK(ac.entryMap.count("Instance"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "strict_mode_force")
+{
+    check(R"(
+--!nonstrict
+local a: {x: number} = {x=1}
+local b = a
+local c = b.@1
+    )");
+
+    auto ac = autocomplete('1');
+
+    CHECK_EQ(1, ac.entryMap.size());
+    CHECK(ac.entryMap.count("x"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "suggest_exported_types")
+{
+    ScopedFastFlag luauCopyExportedTypes{"LuauCopyExportedTypes", true};
+
+    check(R"(
+export type Type = {a: number}
+local a: T@1
+    )");
+
+    auto ac = autocomplete('1');
+
+    CHECK(ac.entryMap.count("Type"));
+    CHECK_EQ(ac.context, AutocompleteContext::Type);
 }
 
 TEST_SUITE_END();

@@ -11,8 +11,6 @@
 
 #include "lstate.h"
 
-// TODO: LBF_MATH_FREXP and LBF_MATH_MODF can work for 1 result case if second store is removed
-
 namespace Luau
 {
 namespace CodeGen
@@ -109,47 +107,11 @@ void emitBuiltinMathLog(IrRegAllocX64& regs, AssemblyBuilderX64& build, int npar
     regs.assertAllFree();
     build.vmovsd(xmm0, luauRegValue(arg));
 
-    if (nparams == 1)
-    {
-        build.call(qword[rNativeContext + offsetof(NativeContext, libm_log)]);
-    }
-    else
-    {
-        Label log10check, logdivlog, exit;
-
-        // Using 'rbx' for non-volatile temporary storage of log(arg1) result
-        RegisterX64 tmp = rbx;
-        OperandX64 arg2value = qword[args + offsetof(TValue, value)];
-
-        build.vmovsd(xmm1, arg2value);
-
-        jumpOnNumberCmp(build, noreg, build.f64(2.0), xmm1, IrCondition::NotEqual, log10check);
-
+    // TODO: IR builtin lowering assumes that the only valid 2-argument call is log2; ideally, we use a less hacky way to indicate that
+    if (nparams == 2)
         build.call(qword[rNativeContext + offsetof(NativeContext, libm_log2)]);
-        build.jmp(exit);
-
-        build.setLabel(log10check);
-        jumpOnNumberCmp(build, noreg, build.f64(10.0), xmm1, IrCondition::NotEqual, logdivlog);
-
-        build.call(qword[rNativeContext + offsetof(NativeContext, libm_log10)]);
-        build.jmp(exit);
-
-        build.setLabel(logdivlog);
-
-        // log(arg1)
+    else
         build.call(qword[rNativeContext + offsetof(NativeContext, libm_log)]);
-        build.vmovq(tmp, xmm0);
-
-        // log(arg2)
-        build.vmovsd(xmm0, arg2value);
-        build.call(qword[rNativeContext + offsetof(NativeContext, libm_log)]);
-
-        // log(arg1) / log(arg2)
-        build.vmovq(xmm1, tmp);
-        build.vdivsd(xmm0, xmm1, xmm0);
-
-        build.setLabel(exit);
-    }
 
     build.vmovsd(luauRegValue(ra), xmm0);
 }
@@ -176,8 +138,11 @@ void emitBuiltinMathFrexp(IrRegAllocX64& regs, AssemblyBuilderX64& build, int np
 
     build.vmovsd(luauRegValue(ra), xmm0);
 
-    build.vcvtsi2sd(xmm0, xmm0, dword[sTemporarySlot + 0]);
-    build.vmovsd(luauRegValue(ra + 1), xmm0);
+    if (nresults > 1)
+    {
+        build.vcvtsi2sd(xmm0, xmm0, dword[sTemporarySlot + 0]);
+        build.vmovsd(luauRegValue(ra + 1), xmm0);
+    }
 }
 
 void emitBuiltinMathModf(IrRegAllocX64& regs, AssemblyBuilderX64& build, int nparams, int ra, int arg, OperandX64 args, int nresults)
@@ -190,7 +155,8 @@ void emitBuiltinMathModf(IrRegAllocX64& regs, AssemblyBuilderX64& build, int npa
     build.vmovsd(xmm1, qword[sTemporarySlot + 0]);
     build.vmovsd(luauRegValue(ra), xmm1);
 
-    build.vmovsd(luauRegValue(ra + 1), xmm0);
+    if (nresults > 1)
+        build.vmovsd(luauRegValue(ra + 1), xmm0);
 }
 
 void emitBuiltinMathSign(IrRegAllocX64& regs, AssemblyBuilderX64& build, int nparams, int ra, int arg, OperandX64 args, int nresults)
@@ -248,68 +214,74 @@ void emitBuiltin(IrRegAllocX64& regs, AssemblyBuilderX64& build, int bfid, int r
     OperandX64 argsOp = 0;
 
     if (args.kind == IrOpKind::VmReg)
-        argsOp = luauRegAddress(args.index);
+        argsOp = luauRegAddress(vmRegOp(args));
     else if (args.kind == IrOpKind::VmConst)
-        argsOp = luauConstantAddress(args.index);
+        argsOp = luauConstantAddress(vmConstOp(args));
 
     switch (bfid)
     {
-    case LBF_ASSERT:
-    case LBF_MATH_DEG:
-    case LBF_MATH_RAD:
-    case LBF_MATH_MIN:
-    case LBF_MATH_MAX:
-    case LBF_MATH_CLAMP:
-    case LBF_MATH_FLOOR:
-    case LBF_MATH_CEIL:
-    case LBF_MATH_SQRT:
-    case LBF_MATH_POW:
-    case LBF_MATH_ABS:
-    case LBF_MATH_ROUND:
-        // These instructions are fully translated to IR
-        break;
     case LBF_MATH_EXP:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathExp(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_FMOD:
+        LUAU_ASSERT(nparams == 2 && nresults == 1);
         return emitBuiltinMathFmod(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_ASIN:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathAsin(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_SIN:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathSin(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_SINH:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathSinh(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_ACOS:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathAcos(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_COS:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathCos(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_COSH:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathCosh(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_ATAN:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathAtan(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_TAN:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathTan(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_TANH:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathTanh(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_ATAN2:
+        LUAU_ASSERT(nparams == 2 && nresults == 1);
         return emitBuiltinMathAtan2(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_LOG10:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathLog10(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_LOG:
+        LUAU_ASSERT((nparams == 1 || nparams == 2) && nresults == 1);
         return emitBuiltinMathLog(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_LDEXP:
+        LUAU_ASSERT(nparams == 2 && nresults == 1);
         return emitBuiltinMathLdexp(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_FREXP:
+        LUAU_ASSERT(nparams == 1 && (nresults == 1 || nresults == 2));
         return emitBuiltinMathFrexp(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_MODF:
+        LUAU_ASSERT(nparams == 1 && (nresults == 1 || nresults == 2));
         return emitBuiltinMathModf(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_MATH_SIGN:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinMathSign(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_TYPE:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinType(regs, build, nparams, ra, arg, argsOp, nresults);
     case LBF_TYPEOF:
+        LUAU_ASSERT(nparams == 1 && nresults == 1);
         return emitBuiltinTypeof(regs, build, nparams, ra, arg, argsOp, nresults);
     default:
-        LUAU_ASSERT(!"missing x64 lowering");
+        LUAU_ASSERT(!"Missing x64 lowering");
         break;
     }
 }

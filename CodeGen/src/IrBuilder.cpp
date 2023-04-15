@@ -364,16 +364,16 @@ void IrBuilder::translateInst(LuauOpcode op, const Instruction* pc, int i)
         translateInstForGPrepInext(*this, pc, i);
         break;
     case LOP_AND:
-        inst(IrCmd::AND, vmReg(LUAU_INSN_A(*pc)), vmReg(LUAU_INSN_B(*pc)), vmReg(LUAU_INSN_C(*pc)));
+        translateInstAndX(*this, pc, i, vmReg(LUAU_INSN_C(*pc)));
         break;
     case LOP_ANDK:
-        inst(IrCmd::ANDK, vmReg(LUAU_INSN_A(*pc)), vmReg(LUAU_INSN_B(*pc)), vmConst(LUAU_INSN_C(*pc)));
+        translateInstAndX(*this, pc, i, vmConst(LUAU_INSN_C(*pc)));
         break;
     case LOP_OR:
-        inst(IrCmd::OR, vmReg(LUAU_INSN_A(*pc)), vmReg(LUAU_INSN_B(*pc)), vmReg(LUAU_INSN_C(*pc)));
+        translateInstOrX(*this, pc, i, vmReg(LUAU_INSN_C(*pc)));
         break;
     case LOP_ORK:
-        inst(IrCmd::ORK, vmReg(LUAU_INSN_A(*pc)), vmReg(LUAU_INSN_B(*pc)), vmConst(LUAU_INSN_C(*pc)));
+        translateInstOrX(*this, pc, i, vmConst(LUAU_INSN_C(*pc)));
         break;
     case LOP_COVERAGE:
         inst(IrCmd::COVERAGE, constUint(i));
@@ -468,7 +468,8 @@ void IrBuilder::clone(const IrBlock& source, bool removeCurrentTerminator)
         IrInst clone = function.instructions[index];
 
         // Skip pseudo instructions to make clone more compact, but validate that they have no users
-        if (isPseudo(clone.cmd))
+        // But if substitution tracks a location, that tracking has to be preserved
+        if (isPseudo(clone.cmd) && !(clone.cmd == IrCmd::SUBSTITUTE && clone.b.kind != IrOpKind::None))
         {
             LUAU_ASSERT(clone.useCount == 0);
             continue;

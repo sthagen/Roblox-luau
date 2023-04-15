@@ -35,14 +35,13 @@ LUAU_FASTFLAG(LuauKnowsTheDataModel3)
 LUAU_FASTFLAGVARIABLE(DebugLuauFreezeDuringUnification, false)
 LUAU_FASTFLAGVARIABLE(LuauReturnAnyInsteadOfICE, false) // Eventually removed as false.
 LUAU_FASTFLAGVARIABLE(DebugLuauSharedSelf, false)
-LUAU_FASTFLAGVARIABLE(LuauTryhardAnd, false)
 LUAU_FASTFLAG(LuauInstantiateInSubtyping)
 LUAU_FASTFLAG(LuauNegatedClassTypes)
 LUAU_FASTFLAGVARIABLE(LuauAllowIndexClassParameters, false)
 LUAU_FASTFLAG(LuauUninhabitedSubAnything2)
+LUAU_FASTFLAG(LuauOccursIsntAlwaysFailure)
 LUAU_FASTFLAGVARIABLE(LuauTypecheckTypeguards, false)
 LUAU_FASTFLAGVARIABLE(LuauTinyControlFlowAnalysis, false)
-LUAU_FASTFLAGVARIABLE(LuauReducingAndOr, false)
 
 namespace Luau
 {
@@ -1020,7 +1019,7 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatAssign& assig
                 right = errorRecoveryType(scope);
             else if (auto vtp = get<VariadicTypePack>(tailPack))
                 right = vtp->ty;
-            else if (get<Unifiable::Free>(tailPack))
+            else if (get<FreeTypePack>(tailPack))
             {
                 *asMutable(tailPack) = TypePack{{left}};
                 growingPack = getMutable<TypePack>(tailPack);
@@ -1281,7 +1280,7 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatForIn& forin)
         callRetPack = checkExprPack(scope, *exprCall).type;
         callRetPack = follow(callRetPack);
 
-        if (get<Unifiable::Free>(callRetPack))
+        if (get<FreeTypePack>(callRetPack))
         {
             iterTy = freshType(scope);
             unify(callRetPack, addTypePack({{iterTy}, freshTypePack(scope)}), scope, forin.location);
@@ -1623,9 +1622,28 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatTypeAlias& ty
 
     TypeId& bindingType = bindingsMap[name].type;
 
-    if (unify(ty, bindingType, aliasScope, typealias.location))
-        bindingType = ty;
+    if (!FFlag::LuauOccursIsntAlwaysFailure)
+    {
+        if (unify(ty, bindingType, aliasScope, typealias.location))
+            bindingType = ty;
+        return ControlFlow::None;
+    }
 
+    unify(ty, bindingType, aliasScope, typealias.location);
+
+    // It is possible for this unification to succeed but for
+    // `bindingType` still to be free For example, in
+    // `type T = T|T`, we generate a fresh free type `X`, and then
+    // unify `X` with `X|X`, which succeeds without binding `X` to
+    // anything, since `X <: X|X`
+    if (bindingType->ty.get_if<FreeType>())
+    {
+        ty = errorRecoveryType(aliasScope);
+        unify(ty, bindingType, aliasScope, typealias.location);
+        reportError(TypeError{typealias.location, OccursCheckFailed{}});
+    }
+
+    bindingType = ty;
     return ControlFlow::None;
 }
 
@@ -1951,7 +1969,7 @@ WithPredicate<TypeId> TypeChecker::checkExpr(const ScopePtr& scope, const AstExp
         return WithPredicate{errorRecoveryType(scope)};
     else if (auto vtp = get<VariadicTypePack>(varargPack))
         return WithPredicate{vtp->ty};
-    else if (get<Unifiable::Generic>(varargPack))
+    else if (get<GenericTypePack>(varargPack))
     {
         // TODO: Better error?
         reportError(expr.location, GenericError{"Trying to get a type from a variadic type parameter"});
@@ -1970,7 +1988,7 @@ WithPredicate<TypeId> TypeChecker::checkExpr(const ScopePtr& scope, const AstExp
     {
         return {pack->head.empty() ? nilType : pack->head[0], std::move(result.predicates)};
     }
-    else if (const FreeTypePack* ftp = get<Unifiable::Free>(retPack))
+    else if (const FreeTypePack* ftp = get<FreeTypePack>(retPack))
     {
         TypeId head = freshType(scope->level);
         TypePackId pack = addTypePack(TypePackVar{TypePack{{head}, freshTypePack(scope->level)}});
@@ -1981,7 +1999,7 @@ WithPredicate<TypeId> TypeChecker::checkExpr(const ScopePtr& scope, const AstExp
         return {errorRecoveryType(scope), std::move(result.predicates)};
     else if (auto vtp = get<VariadicTypePack>(retPack))
         return {vtp->ty, std::move(result.predicates)};
-    else if (get<Unifiable::Generic>(retPack))
+    else if (get<GenericTypePack>(retPack))
     {
         if (FFlag::LuauReturnAnyInsteadOfICE)
             return {anyType, std::move(result.predicates)};
@@ -2848,7 +2866,7 @@ TypeId TypeChecker::checkRelationalOperation(
         {
             return lhsType;
         }
-        else if (FFlag::LuauTryhardAnd)
+        else
         {
             // If lhs is free, we can't tell which 'falsy' components it has, if any
             if (get<FreeType>(lhsType))
@@ -2860,14 +2878,11 @@ TypeId TypeChecker::checkRelationalOperation(
             {
                 LUAU_ASSERT(oty);
 
-                if (FFlag::LuauReducingAndOr)
-                {
-                    // Perform a limited form of type reduction for booleans
-                    if (isPrim(*oty, PrimitiveType::Boolean) && get<BooleanSingleton>(get<SingletonType>(follow(rhsType))))
-                        return booleanType;
-                    if (isPrim(rhsType, PrimitiveType::Boolean) && get<BooleanSingleton>(get<SingletonType>(follow(*oty))))
-                        return booleanType;
-                }
+                // Perform a limited form of type reduction for booleans
+                if (isPrim(*oty, PrimitiveType::Boolean) && get<BooleanSingleton>(get<SingletonType>(follow(rhsType))))
+                    return booleanType;
+                if (isPrim(rhsType, PrimitiveType::Boolean) && get<BooleanSingleton>(get<SingletonType>(follow(*oty))))
+                    return booleanType;
 
                 return unionOfTypes(*oty, rhsType, scope, expr.location, false);
             }
@@ -2876,16 +2891,12 @@ TypeId TypeChecker::checkRelationalOperation(
                 return rhsType;
             }
         }
-        else
-        {
-            return unionOfTypes(rhsType, booleanType, scope, expr.location, false);
-        }
     case AstExprBinary::Or:
         if (lhsIsAny)
         {
             return lhsType;
         }
-        else if (FFlag::LuauTryhardAnd)
+        else
         {
             auto [oty, notNever] = pickTypesFromSense(lhsType, true, neverType); // Filter out truthy types
 
@@ -2893,14 +2904,11 @@ TypeId TypeChecker::checkRelationalOperation(
             {
                 LUAU_ASSERT(oty);
 
-                if (FFlag::LuauReducingAndOr)
-                {
-                    // Perform a limited form of type reduction for booleans
-                    if (isPrim(*oty, PrimitiveType::Boolean) && get<BooleanSingleton>(get<SingletonType>(follow(rhsType))))
-                        return booleanType;
-                    if (isPrim(rhsType, PrimitiveType::Boolean) && get<BooleanSingleton>(get<SingletonType>(follow(*oty))))
-                        return booleanType;
-                }
+                // Perform a limited form of type reduction for booleans
+                if (isPrim(*oty, PrimitiveType::Boolean) && get<BooleanSingleton>(get<SingletonType>(follow(rhsType))))
+                    return booleanType;
+                if (isPrim(rhsType, PrimitiveType::Boolean) && get<BooleanSingleton>(get<SingletonType>(follow(*oty))))
+                    return booleanType;
 
                 return unionOfTypes(*oty, rhsType, scope, expr.location);
             }
@@ -2908,10 +2916,6 @@ TypeId TypeChecker::checkRelationalOperation(
             {
                 return rhsType;
             }
-        }
-        else
-        {
-            return unionOfTypes(lhsType, rhsType, scope, expr.location);
         }
     default:
         LUAU_ASSERT(0);
@@ -3838,7 +3842,7 @@ void TypeChecker::checkArgumentList(const ScopePtr& scope, const AstExpr& funNam
 
             if (argTail)
             {
-                if (state.log.getMutable<Unifiable::Free>(state.log.follow(*argTail)))
+                if (state.log.getMutable<FreeTypePack>(state.log.follow(*argTail)))
                 {
                     if (paramTail)
                         state.tryUnify(*paramTail, *argTail);
@@ -3853,7 +3857,7 @@ void TypeChecker::checkArgumentList(const ScopePtr& scope, const AstExpr& funNam
             else if (paramTail)
             {
                 // argTail is definitely empty
-                if (state.log.getMutable<Unifiable::Free>(state.log.follow(*paramTail)))
+                if (state.log.getMutable<FreeTypePack>(state.log.follow(*paramTail)))
                     state.log.replace(*paramTail, TypePackVar(TypePack{{}}));
             }
 
@@ -5570,7 +5574,7 @@ GenericTypeDefinitions TypeChecker::createGenericTypes(const ScopePtr& scope, st
         }
         else
         {
-            g = addType(Unifiable::Generic{level, n});
+            g = addType(GenericType{level, n});
         }
 
         generics.push_back({g, defaultValue});
@@ -5598,7 +5602,7 @@ GenericTypeDefinitions TypeChecker::createGenericTypes(const ScopePtr& scope, st
 
         TypePackId& cached = scope->parent->typeAliasTypePackParameters[n];
         if (!cached)
-            cached = addTypePack(TypePackVar{Unifiable::Generic{level, n}});
+            cached = addTypePack(TypePackVar{GenericTypePack{level, n}});
 
         genericPacks.push_back({cached, defaultValue});
         scope->privateTypePackBindings[n] = cached;

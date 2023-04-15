@@ -74,7 +74,7 @@ TEST_CASE_FIXTURE(Fixture, "return_type_of_function_is_parenthesized_if_not_just
 TEST_CASE_FIXTURE(Fixture, "return_type_of_function_is_parenthesized_if_tail_is_free")
 {
     auto emptyArgumentPack = TypePackVar{TypePack{}};
-    auto free = Unifiable::Free(TypeLevel());
+    auto free = FreeTypePack(TypeLevel());
     auto freePack = TypePackVar{TypePackVariant{free}};
     auto returnPack = TypePackVar{TypePack{{builtinTypes->numberType}, &freePack}};
     auto returnsTwo = Type(FunctionType(frontend.globals.globalScope->level, &emptyArgumentPack, &returnPack));
@@ -273,12 +273,14 @@ TEST_CASE_FIXTURE(Fixture, "substitution_skip_failure")
 
     TypeId root = &ttvTweenResult;
 
-    frontend.typeChecker.currentModule = std::make_shared<Module>();
-    frontend.typeChecker.currentModule->scopes.emplace_back(Location{}, std::make_shared<Scope>(builtinTypes->anyTypePack));
+    ModulePtr currentModule = std::make_shared<Module>();
+    Anyification anyification(&currentModule->internalTypes, frontend.globals.globalScope, builtinTypes, &frontend.iceHandler, builtinTypes->anyType,
+        builtinTypes->anyTypePack);
+    std::optional<TypeId> any = anyification.substitute(root);
 
-    TypeId result = frontend.typeChecker.anyify(frontend.globals.globalScope, root, Location{});
-
-    CHECK_EQ("{| f: t1 |} where t1 = () -> {| f: () -> {| f: ({| f: t1 |}) -> (), signal: {| f: (any) -> () |} |} |}", toString(result));
+    REQUIRE(!anyification.normalizationTooComplex);
+    REQUIRE(any.has_value());
+    CHECK_EQ("{| f: t1 |} where t1 = () -> {| f: () -> {| f: ({| f: t1 |}) -> (), signal: {| f: (any) -> () |} |} |}", toString(*any));
 }
 
 TEST_CASE("tagging_tables")

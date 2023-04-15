@@ -26,9 +26,9 @@ struct IrLoweringA64
 {
     IrLoweringA64(AssemblyBuilderA64& build, ModuleHelpers& helpers, NativeState& data, Proto* proto, IrFunction& function);
 
-    static bool canLower(const IrFunction& function);
-
     void lowerInst(IrInst& inst, uint32_t index, IrBlock& next);
+
+    bool hasError() const;
 
     bool isFallthroughBlock(IrBlock target, IrBlock next);
     void jumpOrFallthrough(IrBlock& target, IrBlock& next);
@@ -59,6 +59,8 @@ struct IrLoweringA64
     IrFunction& function;
 
     IrRegAllocA64 regs;
+
+    bool error = false;
 };
 
 } // namespace A64

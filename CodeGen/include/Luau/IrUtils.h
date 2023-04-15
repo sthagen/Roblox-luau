@@ -175,6 +175,8 @@ inline bool isPseudo(IrCmd cmd)
     return cmd == IrCmd::NOP || cmd == IrCmd::SUBSTITUTE;
 }
 
+IrValueKind getCmdValueKind(IrCmd cmd);
+
 bool isGCO(uint8_t tag);
 
 // Manually add or remove use of an operand
@@ -198,7 +200,7 @@ void replace(IrFunction& function, IrOp& original, IrOp replacement);
 void replace(IrFunction& function, IrBlock& block, uint32_t instIdx, IrInst replacement);
 
 // Replace instruction with a different value (using IrCmd::SUBSTITUTE)
-void substitute(IrFunction& function, IrInst& inst, IrOp replacement);
+void substitute(IrFunction& function, IrInst& inst, IrOp replacement, IrOp location = {});
 
 // Replace instruction arguments that point to substitutions with target values
 void applySubstitutions(IrFunction& function, IrOp& op);

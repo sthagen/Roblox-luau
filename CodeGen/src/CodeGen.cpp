@@ -74,7 +74,7 @@ static NativeProto* createNativeProto(Proto* proto, const IrBuilder& ir)
 }
 
 template<typename AssemblyBuilder, typename IrLowering>
-static void lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& function, int bytecodeid, AssemblyOptions options)
+static bool lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& function, int bytecodeid, AssemblyOptions options)
 {
     // While we will need a better block ordering in the future, right now we want to mostly preserve build order with fallbacks outlined
     std::vector<uint32_t> sortedBlocks;
@@ -176,6 +176,10 @@ static void lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& 
 
             IrInst& inst = function.instructions[index];
 
+            // Substitutions might have meta information about operand restore location from memory
+            if (inst.cmd == IrCmd::SUBSTITUTE && inst.b.kind != IrOpKind::None)
+                function.recordRestoreOp(inst.a.index, inst.b);
+
             // Skip pseudo instructions, but make sure they are not used at this stage
             // This also prevents them from getting into text output when that's enabled
             if (isPseudo(inst.cmd))
@@ -193,6 +197,20 @@ static void lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& 
             IrBlock& next = i + 1 < sortedBlocks.size() ? function.blocks[sortedBlocks[i + 1]] : dummy;
 
             lowering.lowerInst(inst, index, next);
+
+            if (lowering.hasError())
+            {
+                // Place labels for all blocks that we're skipping
+                // This is needed to avoid AssemblyBuilder assertions about jumps in earlier blocks with unplaced labels
+                for (size_t j = i + 1; j < sortedBlocks.size(); ++j)
+                {
+                    IrBlock& abandoned = function.blocks[sortedBlocks[j]];
+
+                    build.setLabel(abandoned.label);
+                }
+
+                return false;
+            }
         }
 
         if (options.includeIr)
@@ -213,35 +231,26 @@ static void lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& 
         if (irLocation != ~0u)
             asmLocation = bcLocations[irLocation];
     }
+
+    return true;
 }
 
 [[maybe_unused]] static bool lowerIr(
     X64::AssemblyBuilderX64& build, IrBuilder& ir, NativeState& data, ModuleHelpers& helpers, Proto* proto, AssemblyOptions options)
 {
-    constexpr uint32_t kFunctionAlignment = 32;
-
     optimizeMemoryOperandsX64(ir.function);
-
-    build.align(kFunctionAlignment, X64::AlignmentDataX64::Ud2);
 
     X64::IrLoweringX64 lowering(build, helpers, data, ir.function);
 
-    lowerImpl(build, lowering, ir.function, proto->bytecodeid, options);
-
-    return true;
+    return lowerImpl(build, lowering, ir.function, proto->bytecodeid, options);
 }
 
 [[maybe_unused]] static bool lowerIr(
     A64::AssemblyBuilderA64& build, IrBuilder& ir, NativeState& data, ModuleHelpers& helpers, Proto* proto, AssemblyOptions options)
 {
-    if (!A64::IrLoweringA64::canLower(ir.function))
-        return false;
-
     A64::IrLoweringA64 lowering(build, helpers, data, proto, ir.function);
 
-    lowerImpl(build, lowering, ir.function, proto->bytecodeid, options);
-
-    return true;
+    return lowerImpl(build, lowering, ir.function, proto->bytecodeid, options);
 }
 
 template<typename AssemblyBuilder>
@@ -431,13 +440,13 @@ void create(lua_State* L)
     initHelperFunctions(data);
 
 #if defined(__x86_64__) || defined(_M_X64)
-    if (!X64::initEntryFunction(data))
+    if (!X64::initHeaderFunctions(data))
     {
         destroyNativeState(L);
         return;
     }
 #elif defined(__aarch64__)
-    if (!A64::initEntryFunction(data))
+    if (!A64::initHeaderFunctions(data))
     {
         destroyNativeState(L);
         return;

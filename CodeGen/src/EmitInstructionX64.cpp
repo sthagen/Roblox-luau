@@ -316,7 +316,7 @@ void emitInstReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers, int ra, i
     build.jmp(qword[rdx + rax * 2]);
 }
 
-void emitInstSetList(IrRegAllocX64& regs, AssemblyBuilderX64& build, Label& next, int ra, int rb, int count, uint32_t index)
+void emitInstSetList(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, int rb, int count, uint32_t index)
 {
     OperandX64 last = index + count - 1;
 
@@ -347,7 +347,7 @@ void emitInstSetList(IrRegAllocX64& regs, AssemblyBuilderX64& build, Label& next
 
     Label skipResize;
 
-    RegisterX64 table = regs.takeReg(rax);
+    RegisterX64 table = regs.takeReg(rax, kInvalidInstIdx);
 
     build.mov(table, luauRegValue(ra));
 
@@ -412,10 +412,10 @@ void emitInstSetList(IrRegAllocX64& regs, AssemblyBuilderX64& build, Label& next
         build.setLabel(endLoop);
     }
 
-    callBarrierTableFast(regs, build, table, {}, next);
+    callBarrierTableFast(regs, build, table, {});
 }
 
-void emitinstForGLoop(AssemblyBuilderX64& build, int ra, int aux, Label& loopRepeat, Label& loopExit)
+void emitInstForGLoop(AssemblyBuilderX64& build, int ra, int aux, Label& loopRepeat)
 {
     // ipairs-style traversal is handled in IR
     LUAU_ASSERT(aux >= 0);
@@ -482,154 +482,6 @@ void emitinstForGLoop(AssemblyBuilderX64& build, int ra, int aux, Label& loopRep
     build.call(qword[rNativeContext + offsetof(NativeContext, forgLoopNodeIter)]);
     build.test(al, al);
     build.jcc(ConditionX64::NotZero, loopRepeat);
-}
-
-void emitinstForGLoopFallback(AssemblyBuilderX64& build, int ra, int aux, Label& loopRepeat)
-{
-    build.mov(rArg1, rState);
-    build.mov(dwordReg(rArg2), ra);
-    build.mov(dwordReg(rArg3), aux);
-    build.call(qword[rNativeContext + offsetof(NativeContext, forgLoopNonTableFallback)]);
-    emitUpdateBase(build);
-    build.test(al, al);
-    build.jcc(ConditionX64::NotZero, loopRepeat);
-}
-
-void emitInstForGPrepXnextFallback(AssemblyBuilderX64& build, int pcpos, int ra, Label& target)
-{
-    build.mov(rArg1, rState);
-    build.lea(rArg2, luauRegAddress(ra));
-    build.mov(dwordReg(rArg3), pcpos + 1);
-    build.call(qword[rNativeContext + offsetof(NativeContext, forgPrepXnextFallback)]);
-    build.jmp(target);
-}
-
-static void emitInstAndX(AssemblyBuilderX64& build, int ra, int rb, OperandX64 c)
-{
-    Label target, fallthrough;
-    jumpIfFalsy(build, rb, target, fallthrough);
-
-    build.setLabel(fallthrough);
-
-    build.vmovups(xmm0, c);
-    build.vmovups(luauReg(ra), xmm0);
-
-    if (ra == rb)
-    {
-        build.setLabel(target);
-    }
-    else
-    {
-        Label exit;
-        build.jmp(exit);
-
-        build.setLabel(target);
-
-        build.vmovups(xmm0, luauReg(rb));
-        build.vmovups(luauReg(ra), xmm0);
-
-        build.setLabel(exit);
-    }
-}
-
-void emitInstAnd(AssemblyBuilderX64& build, int ra, int rb, int rc)
-{
-    emitInstAndX(build, ra, rb, luauReg(rc));
-}
-
-void emitInstAndK(AssemblyBuilderX64& build, int ra, int rb, int kc)
-{
-    emitInstAndX(build, ra, rb, luauConstant(kc));
-}
-
-static void emitInstOrX(AssemblyBuilderX64& build, int ra, int rb, OperandX64 c)
-{
-    Label target, fallthrough;
-    jumpIfTruthy(build, rb, target, fallthrough);
-
-    build.setLabel(fallthrough);
-
-    build.vmovups(xmm0, c);
-    build.vmovups(luauReg(ra), xmm0);
-
-    if (ra == rb)
-    {
-        build.setLabel(target);
-    }
-    else
-    {
-        Label exit;
-        build.jmp(exit);
-
-        build.setLabel(target);
-
-        build.vmovups(xmm0, luauReg(rb));
-        build.vmovups(luauReg(ra), xmm0);
-
-        build.setLabel(exit);
-    }
-}
-
-void emitInstOr(AssemblyBuilderX64& build, int ra, int rb, int rc)
-{
-    emitInstOrX(build, ra, rb, luauReg(rc));
-}
-
-void emitInstOrK(AssemblyBuilderX64& build, int ra, int rb, int kc)
-{
-    emitInstOrX(build, ra, rb, luauConstant(kc));
-}
-
-void emitInstGetImportFallback(AssemblyBuilderX64& build, int ra, uint32_t aux)
-{
-    build.mov(rax, sClosure);
-
-    // luaV_getimport(L, cl->env, k, aux, /* propagatenil= */ false)
-    build.mov(rArg1, rState);
-    build.mov(rArg2, qword[rax + offsetof(Closure, env)]);
-    build.mov(rArg3, rConstants);
-    build.mov(dwordReg(rArg4), aux);
-
-    if (build.abi == ABIX64::Windows)
-        build.mov(sArg5, 0);
-    else
-        build.xor_(rArg5, rArg5);
-
-    build.call(qword[rNativeContext + offsetof(NativeContext, luaV_getimport)]);
-
-    emitUpdateBase(build);
-
-    // setobj2s(L, ra, L->top - 1)
-    build.mov(rax, qword[rState + offsetof(lua_State, top)]);
-    build.sub(rax, sizeof(TValue));
-    build.vmovups(xmm0, xmmword[rax]);
-    build.vmovups(luauReg(ra), xmm0);
-
-    // L->top--
-    build.mov(qword[rState + offsetof(lua_State, top)], rax);
-}
-
-void emitInstCoverage(AssemblyBuilderX64& build, int pcpos)
-{
-    build.mov(rcx, sCode);
-    build.add(rcx, pcpos * sizeof(Instruction));
-
-    // hits = LUAU_INSN_E(*pc)
-    build.mov(edx, dword[rcx]);
-    build.sar(edx, 8);
-
-    // hits = (hits < (1 << 23) - 1) ? hits + 1 : hits;
-    build.xor_(eax, eax);
-    build.cmp(edx, (1 << 23) - 1);
-    build.setcc(ConditionX64::NotEqual, al);
-    build.add(edx, eax);
-
-
-    // VM_PATCH_E(pc, hits);
-    build.sal(edx, 8);
-    build.movzx(eax, byte[rcx]);
-    build.or_(eax, edx);
-    build.mov(dword[rcx], eax);
 }
 
 } // namespace X64

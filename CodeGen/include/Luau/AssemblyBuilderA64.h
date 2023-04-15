@@ -37,6 +37,7 @@ public:
     void movk(RegisterA64 dst, uint16_t src, int shift = 0);
 
     // Arithmetics
+    // TODO: support various kinds of shifts
     void add(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, int shift = 0);
     void add(RegisterA64 dst, RegisterA64 src1, uint16_t src2);
     void sub(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, int shift = 0);
@@ -48,14 +49,24 @@ public:
     void cmp(RegisterA64 src1, RegisterA64 src2);
     void cmp(RegisterA64 src1, uint16_t src2);
     void csel(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, ConditionA64 cond);
+    void cset(RegisterA64 dst, ConditionA64 cond);
 
     // Bitwise
-    // Note: shifted-register support and bitfield operations are omitted for simplicity
-    // TODO: support immediate arguments (they have odd encoding and forbid many values)
+    // TODO: support shifts
+    // TODO: support bitfield ops
     void and_(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2);
     void orr(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2);
     void eor(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2);
+    void bic(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2);
+    void tst(RegisterA64 src1, RegisterA64 src2);
     void mvn(RegisterA64 dst, RegisterA64 src);
+
+    // Bitwise with immediate
+    // Note: immediate must have a single contiguous sequence of 1 bits set of length 1..31
+    void and_(RegisterA64 dst, RegisterA64 src1, uint32_t src2);
+    void orr(RegisterA64 dst, RegisterA64 src1, uint32_t src2);
+    void eor(RegisterA64 dst, RegisterA64 src1, uint32_t src2);
+    void tst(RegisterA64 src1, uint32_t src2);
 
     // Shifts
     void lsl(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2);
@@ -82,7 +93,7 @@ public:
     void stp(RegisterA64 src1, RegisterA64 src2, AddressA64 dst);
 
     // Control flow
-    // Note: tbz/tbnz are currently not supported because they have 15-bit offsets and we don't support branch thunks
+    // TODO: support tbz/tbnz; they have 15-bit offsets but they can be useful in constrained cases
     void b(Label& label);
     void b(ConditionA64 cond, Label& label);
     void cbz(RegisterA64 src, Label& label);
@@ -165,7 +176,7 @@ public:
 private:
     // Instruction archetypes
     void place0(const char* name, uint32_t word);
-    void placeSR3(const char* name, RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, uint8_t op, int shift = 0);
+    void placeSR3(const char* name, RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, uint8_t op, int shift = 0, int N = 0);
     void placeSR2(const char* name, RegisterA64 dst, RegisterA64 src, uint8_t op, uint8_t op2 = 0);
     void placeR3(const char* name, RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, uint8_t op, uint8_t op2);
     void placeR1(const char* name, RegisterA64 dst, RegisterA64 src, uint32_t op);
@@ -178,8 +189,9 @@ private:
     void placeADR(const char* name, RegisterA64 src, uint8_t op);
     void placeADR(const char* name, RegisterA64 src, uint8_t op, Label& label);
     void placeP(const char* name, RegisterA64 dst1, RegisterA64 dst2, AddressA64 src, uint8_t op, uint8_t opc, int sizelog);
-    void placeCS(const char* name, RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, ConditionA64 cond, uint8_t op, uint8_t opc);
+    void placeCS(const char* name, RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, ConditionA64 cond, uint8_t op, uint8_t opc, int invert = 0);
     void placeFCMP(const char* name, RegisterA64 src1, RegisterA64 src2, uint8_t op, uint8_t opc);
+    void placeBM(const char* name, RegisterA64 dst, RegisterA64 src1, uint32_t src2, uint8_t op);
 
     void place(uint32_t word);
 
