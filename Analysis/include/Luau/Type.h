@@ -10,6 +10,7 @@
 #include "Luau/Unifiable.h"
 #include "Luau/Variant.h"
 
+#include <atomic>
 #include <deque>
 #include <map>
 #include <memory>
@@ -300,7 +301,7 @@ struct MagicFunctionCallContext
     TypePackId result;
 };
 
-using DcrMagicFunction = bool (*)(MagicFunctionCallContext);
+using DcrMagicFunction = std::function<bool(MagicFunctionCallContext)>;
 
 struct MagicRefinementContext
 {
@@ -378,12 +379,39 @@ struct TableIndexer
 
 struct Property
 {
-    TypeId type;
+    static Property readonly(TypeId ty);
+    static Property writeonly(TypeId ty);
+    static Property rw(TypeId ty);                 // Shared read-write type.
+    static Property rw(TypeId read, TypeId write); // Separate read-write type.
+    static std::optional<Property> create(std::optional<TypeId> read, std::optional<TypeId> write);
+
     bool deprecated = false;
     std::string deprecatedSuggestion;
     std::optional<Location> location = std::nullopt;
     Tags tags;
     std::optional<std::string> documentationSymbol;
+
+    // DEPRECATED
+    // TODO: Kill all constructors in favor of `Property::rw(TypeId read, TypeId write)` and friends.
+    Property();
+    Property(TypeId readTy, bool deprecated = false, const std::string& deprecatedSuggestion = "", std::optional<Location> location = std::nullopt,
+        const Tags& tags = {}, const std::optional<std::string>& documentationSymbol = std::nullopt);
+
+    // DEPRECATED: Should only be called in non-RWP! We assert that the `readTy` is not nullopt.
+    // TODO: Kill once we don't have non-RWP.
+    TypeId type() const;
+    void setType(TypeId ty);
+
+    // Should only be called in RWP!
+    // We do not assert that `readTy` nor `writeTy` are nullopt or not.
+    // The invariant is that at least one of them mustn't be nullopt, which we do assert here.
+    // TODO: Kill this in favor of exposing `readTy`/`writeTy` directly? If we do, we'll lose the asserts which will be useful while debugging.
+    std::optional<TypeId> readType() const;
+    std::optional<TypeId> writeType() const;
+
+private:
+    std::optional<TypeId> readTy;
+    std::optional<TypeId> writeTy;
 };
 
 struct TableType
@@ -550,7 +578,50 @@ struct IntersectionType
 
 struct LazyType
 {
-    std::function<TypeId()> thunk;
+    LazyType() = default;
+    LazyType(std::function<TypeId()> thunk_DEPRECATED, std::function<void(LazyType&)> unwrap)
+        : thunk_DEPRECATED(thunk_DEPRECATED)
+        , unwrap(unwrap)
+    {
+    }
+
+    // std::atomic is sad and requires a manual copy
+    LazyType(const LazyType& rhs)
+        : thunk_DEPRECATED(rhs.thunk_DEPRECATED)
+        , unwrap(rhs.unwrap)
+        , unwrapped(rhs.unwrapped.load())
+    {
+    }
+
+    LazyType(LazyType&& rhs) noexcept
+        : thunk_DEPRECATED(std::move(rhs.thunk_DEPRECATED))
+        , unwrap(std::move(rhs.unwrap))
+        , unwrapped(rhs.unwrapped.load())
+    {
+    }
+
+    LazyType& operator=(const LazyType& rhs)
+    {
+        thunk_DEPRECATED = rhs.thunk_DEPRECATED;
+        unwrap = rhs.unwrap;
+        unwrapped = rhs.unwrapped.load();
+
+        return *this;
+    }
+
+    LazyType& operator=(LazyType&& rhs) noexcept
+    {
+        thunk_DEPRECATED = std::move(rhs.thunk_DEPRECATED);
+        unwrap = std::move(rhs.unwrap);
+        unwrapped = rhs.unwrapped.load();
+
+        return *this;
+    }
+
+    std::function<TypeId()> thunk_DEPRECATED;
+
+    std::function<void(LazyType&)> unwrap;
+    std::atomic<TypeId> unwrapped = nullptr;
 };
 
 struct UnknownType
@@ -798,7 +869,7 @@ struct TypeIterator
     TypeIterator<T> operator++(int)
     {
         TypeIterator<T> copy = *this;
-        ++copy;
+        ++*this;
         return copy;
     }
 

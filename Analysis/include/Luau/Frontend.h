@@ -8,6 +8,8 @@
 #include "Luau/Scope.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/Variant.h"
+
+#include <mutex>
 #include <string>
 #include <vector>
 #include <optional>
@@ -51,9 +53,7 @@ std::optional<ModuleName> pathExprToModuleName(const ModuleName& currentModuleNa
  * error when we try during typechecking.
  */
 std::optional<ModuleName> pathExprToModuleName(const ModuleName& currentModuleName, const AstExpr& expr);
-// TODO: Deprecate this code path when we move away from the old solver
-LoadDefinitionFileResult loadDefinitionFileNoDCR(TypeChecker& typeChecker, GlobalTypes& globals, ScopePtr targetScope, std::string_view definition,
-    const std::string& packageName, bool captureComments);
+
 struct SourceNode
 {
     bool hasDirtySourceModule() const
@@ -67,6 +67,7 @@ struct SourceNode
     }
 
     ModuleName name;
+    std::string humanReadableName;
     std::unordered_set<ModuleName> requireSet;
     std::vector<std::pair<ModuleName, Location>> requireLocations;
     bool dirtySourceModule = true;
@@ -114,7 +115,13 @@ struct FrontendModuleResolver : ModuleResolver
     std::optional<ModuleInfo> resolveModuleInfo(const ModuleName& currentModuleName, const AstExpr& pathExpr) override;
     std::string getHumanReadableModuleName(const ModuleName& moduleName) const override;
 
+    void setModule(const ModuleName& moduleName, ModulePtr module);
+    void clearModules();
+
+private:
     Frontend* frontend;
+
+    mutable std::mutex moduleMutex;
     std::unordered_map<ModuleName, ModulePtr> modules;
 };
 
@@ -200,10 +207,6 @@ public:
     GlobalTypes globals;
     GlobalTypes globalsForAutocomplete;
 
-    // TODO: remove with FFlagLuauOnDemandTypecheckers
-    TypeChecker typeChecker_DEPRECATED;
-    TypeChecker typeCheckerForAutocomplete_DEPRECATED;
-
     ConfigResolver* configResolver;
     FrontendOptions options;
     InternalErrorReporter iceHandler;
@@ -218,10 +221,11 @@ public:
 
 ModulePtr check(const SourceModule& sourceModule, const std::vector<RequireCycle>& requireCycles, NotNull<BuiltinTypes> builtinTypes,
     NotNull<InternalErrorReporter> iceHandler, NotNull<ModuleResolver> moduleResolver, NotNull<FileResolver> fileResolver,
-    const ScopePtr& globalScope, FrontendOptions options);
+    const ScopePtr& globalScope, std::function<void(const ModuleName&, const ScopePtr&)> prepareModuleScope, FrontendOptions options);
 
 ModulePtr check(const SourceModule& sourceModule, const std::vector<RequireCycle>& requireCycles, NotNull<BuiltinTypes> builtinTypes,
     NotNull<InternalErrorReporter> iceHandler, NotNull<ModuleResolver> moduleResolver, NotNull<FileResolver> fileResolver,
-    const ScopePtr& globalScope, FrontendOptions options, bool recordJsonLog);
+    const ScopePtr& globalScope, std::function<void(const ModuleName&, const ScopePtr&)> prepareModuleScope, FrontendOptions options,
+    bool recordJsonLog);
 
 } // namespace Luau

@@ -660,7 +660,7 @@ struct TypeStringifier
                 state.emit("\"]");
             }
             state.emit(": ");
-            stringify(prop.type);
+            stringify(prop.type());
             comma = true;
             ++index;
         }
@@ -834,8 +834,15 @@ struct TypeStringifier
 
     void operator()(TypeId, const LazyType& ltv)
     {
-        state.result.invalid = true;
-        state.emit("lazy?");
+        if (TypeId unwrapped = ltv.unwrapped.load())
+        {
+            stringify(unwrapped);
+        }
+        else
+        {
+            state.result.invalid = true;
+            state.emit("lazy?");
+        }
     }
 
     void operator()(TypeId, const UnknownType& ttv)

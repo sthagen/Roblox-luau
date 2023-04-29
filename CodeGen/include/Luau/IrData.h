@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <stdint.h>
+#include <string.h>
 
 struct Proto;
 
@@ -17,6 +18,12 @@ namespace Luau
 {
 namespace CodeGen
 {
+
+// IR extensions to LuauBuiltinFunction enum (these only exist inside IR, and start from 256 to avoid collisions)
+enum
+{
+    LBF_IR_MATH_LOG2 = 256,
+};
 
 // IR instruction command.
 // In the command description, following abbreviations are used:
@@ -112,7 +119,7 @@ enum class IrCmd : uint8_t
     ADD_INT,
     SUB_INT,
 
-    // Add/Sub/Mul/Div/Mod/Pow two double numbers
+    // Add/Sub/Mul/Div/Mod two double numbers
     // A, B: double
     // In final x64 lowering, B can also be Rn or Kn
     ADD_NUM,
@@ -120,7 +127,6 @@ enum class IrCmd : uint8_t
     MUL_NUM,
     DIV_NUM,
     MOD_NUM,
-    POW_NUM,
 
     // Get the minimum/maximum of two numbers
     // If one of the values is NaN, 'B' is returned as the result
@@ -186,6 +192,19 @@ enum class IrCmd : uint8_t
     // D: block (if false)
     JUMP_EQ_INT,
 
+    // Jump if A < B
+    // A, B: int
+    // C: block (if true)
+    // D: block (if false)
+    JUMP_LT_INT,
+
+    // Jump if unsigned(A) >= unsigned(B)
+    // A, B: int
+    // C: condition
+    // D: block (if true)
+    // E: block (if false)
+    JUMP_GE_UINT,
+
     // Jump if pointers are equal
     // A, B: pointer (*)
     // C: block (if true)
@@ -240,6 +259,15 @@ enum class IrCmd : uint8_t
     // Convert integer into a double number
     // A: int
     INT_TO_NUM,
+    UINT_TO_NUM,
+
+    // Converts a double number to an integer. 'A' may be any representable integer in a double.
+    // A: double
+    NUM_TO_INT,
+
+    // Converts a double number to an unsigned integer. For out-of-range values of 'A', the result is arch-specific.
+    // A: double
+    NUM_TO_UINT,
 
     // Adjust stack top (L->top) to point at 'B' TValues *after* the specified register
     // This is used to return muliple values
@@ -517,10 +545,38 @@ enum class IrCmd : uint8_t
     FALLBACK_FORGPREP,
 
     // Instruction that passes value through, it is produced by constant folding and users substitute it with the value
-    // When operand location is set, updates the tracked location of the value in memory
     SUBSTITUTE,
     // A: operand of any type
-    // B: Rn/Kn/none (location of operand in memory; optional)
+
+    // Performs bitwise and/xor/or on two unsigned integers
+    // A, B: int
+    BITAND_UINT,
+    BITXOR_UINT,
+    BITOR_UINT,
+
+    // Performs bitwise not on an unsigned integer
+    // A: int
+    BITNOT_UINT,
+
+    // Performs bitwise shift/rotate on an unsigned integer
+    // A: int (source)
+    // B: int (shift amount)
+    BITLSHIFT_UINT,
+    BITRSHIFT_UINT,
+    BITARSHIFT_UINT,
+    BITLROTATE_UINT,
+    BITRROTATE_UINT,
+
+    // Returns the number of consecutive zero bits in A starting from the left-most (most significant) bit.
+    // A: int
+    BITCOUNTLZ_UINT,
+    BITCOUNTRZ_UINT,
+
+    // Calls native libm function with 1 or 2 arguments
+    // A: builtin function ID
+    // B: double
+    // C: double (optional, 2nd argument)
+    INVOKE_LIBM,
 };
 
 enum class IrConstKind : uint8_t
@@ -570,6 +626,8 @@ enum class IrCondition : uint8_t
 enum class IrOpKind : uint32_t
 {
     None,
+
+    Undef,
 
     // To reference a constant value
     Constant,
@@ -654,10 +712,68 @@ struct IrInst
     A64::RegisterA64 regA64 = A64::noreg;
     bool reusedReg = false;
     bool spilled = false;
+    bool needsReload = false;
 };
 
 // When IrInst operands are used, current instruction index is often required to track lifetime
 constexpr uint32_t kInvalidInstIdx = ~0u;
+
+struct IrInstHash
+{
+    static const uint32_t m = 0x5bd1e995;
+    static const int r = 24;
+
+    static uint32_t mix(uint32_t h, uint32_t k)
+    {
+        // MurmurHash2 step
+        k *= m;
+        k ^= k >> r;
+        k *= m;
+
+        h *= m;
+        h ^= k;
+
+        return h;
+    }
+
+    static uint32_t mix(uint32_t h, IrOp op)
+    {
+        static_assert(sizeof(op) == sizeof(uint32_t));
+        uint32_t k;
+        memcpy(&k, &op, sizeof(op));
+
+        return mix(h, k);
+    }
+
+    size_t operator()(const IrInst& key) const
+    {
+        // MurmurHash2 unrolled
+        uint32_t h = 25;
+
+        h = mix(h, uint32_t(key.cmd));
+        h = mix(h, key.a);
+        h = mix(h, key.b);
+        h = mix(h, key.c);
+        h = mix(h, key.d);
+        h = mix(h, key.e);
+        h = mix(h, key.f);
+
+        // MurmurHash2 tail
+        h ^= h >> 13;
+        h *= m;
+        h ^= h >> 15;
+
+        return h;
+    }
+};
+
+struct IrInstEq
+{
+    bool operator()(const IrInst& a, const IrInst& b) const
+    {
+        return a.cmd == b.cmd && a.a == b.a && a.b == b.b && a.c == b.c && a.d == b.d && a.e == b.e && a.f == b.f;
+    }
+};
 
 enum class IrBlockKind : uint8_t
 {
@@ -696,8 +812,9 @@ struct IrFunction
 
     std::vector<BytecodeMapping> bcMapping;
 
-    // For each instruction, an operand that can be used to recompute the calue
+    // For each instruction, an operand that can be used to recompute the value
     std::vector<IrOp> valueRestoreOps;
+    uint32_t validRestoreOpBlockIdx = 0;
 
     Proto* proto = nullptr;
 
@@ -859,6 +976,12 @@ struct IrFunction
     IrOp findRestoreOp(uint32_t instIdx) const
     {
         if (instIdx >= valueRestoreOps.size())
+            return {};
+
+        const IrBlock& block = blocks[validRestoreOpBlockIdx];
+
+        // Values can only reference restore operands in the current block
+        if (instIdx < block.start || instIdx > block.finish)
             return {};
 
         return valueRestoreOps[instIdx];

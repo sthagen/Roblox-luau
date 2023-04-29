@@ -58,6 +58,8 @@ public:
     void sar(OperandX64 lhs, OperandX64 rhs);
     void shl(OperandX64 lhs, OperandX64 rhs);
     void shr(OperandX64 lhs, OperandX64 rhs);
+    void rol(OperandX64 lhs, OperandX64 rhs);
+    void ror(OperandX64 lhs, OperandX64 rhs);
 
     // Two operand mov instruction has additional specialized encodings
     void mov(OperandX64 lhs, OperandX64 rhs);
@@ -96,6 +98,9 @@ public:
     void call(OperandX64 op);
 
     void int3();
+
+    void bsr(RegisterX64 dst, OperandX64 src);
+    void bsf(RegisterX64 dst, OperandX64 src);
 
     // Code alignment
     void nop(uint32_t length = 1);
@@ -149,7 +154,7 @@ public:
 
 
     // Run final checks
-    void finalize();
+    bool finalize();
 
     // Places a label at current location and returns it
     Label setLabel();

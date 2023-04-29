@@ -120,8 +120,6 @@ const char* getCmdName(IrCmd cmd)
         return "DIV_NUM";
     case IrCmd::MOD_NUM:
         return "MOD_NUM";
-    case IrCmd::POW_NUM:
-        return "POW_NUM";
     case IrCmd::MIN_NUM:
         return "MIN_NUM";
     case IrCmd::MAX_NUM:
@@ -150,6 +148,10 @@ const char* getCmdName(IrCmd cmd)
         return "JUMP_EQ_TAG";
     case IrCmd::JUMP_EQ_INT:
         return "JUMP_EQ_INT";
+    case IrCmd::JUMP_LT_INT:
+        return "JUMP_LT_INT";
+    case IrCmd::JUMP_GE_UINT:
+        return "JUMP_GE_UINT";
     case IrCmd::JUMP_EQ_POINTER:
         return "JUMP_EQ_POINTER";
     case IrCmd::JUMP_CMP_NUM:
@@ -170,6 +172,12 @@ const char* getCmdName(IrCmd cmd)
         return "TRY_CALL_FASTGETTM";
     case IrCmd::INT_TO_NUM:
         return "INT_TO_NUM";
+    case IrCmd::UINT_TO_NUM:
+        return "UINT_TO_NUM";
+    case IrCmd::NUM_TO_INT:
+        return "NUM_TO_INT";
+    case IrCmd::NUM_TO_UINT:
+        return "NUM_TO_UINT";
     case IrCmd::ADJUST_STACK_TO_REG:
         return "ADJUST_STACK_TO_REG";
     case IrCmd::ADJUST_STACK_TO_TOP:
@@ -264,6 +272,30 @@ const char* getCmdName(IrCmd cmd)
         return "FALLBACK_FORGPREP";
     case IrCmd::SUBSTITUTE:
         return "SUBSTITUTE";
+    case IrCmd::BITAND_UINT:
+        return "BITAND_UINT";
+    case IrCmd::BITXOR_UINT:
+        return "BITXOR_UINT";
+    case IrCmd::BITOR_UINT:
+        return "BITOR_UINT";
+    case IrCmd::BITNOT_UINT:
+        return "BITNOT_UINT";
+    case IrCmd::BITLSHIFT_UINT:
+        return "BITLSHIFT_UINT";
+    case IrCmd::BITRSHIFT_UINT:
+        return "BITRSHIFT_UINT";
+    case IrCmd::BITARSHIFT_UINT:
+        return "BITARSHIFT_UINT";
+    case IrCmd::BITLROTATE_UINT:
+        return "BITLROTATE_UINT";
+    case IrCmd::BITRROTATE_UINT:
+        return "BITRROTATE_UINT";
+    case IrCmd::BITCOUNTLZ_UINT:
+        return "BITCOUNTLZ_UINT";
+    case IrCmd::BITCOUNTRZ_UINT:
+        return "BITCOUNTRZ_UINT";
+    case IrCmd::INVOKE_LIBM:
+        return "INVOKE_LIBM";
     }
 
     LUAU_UNREACHABLE();
@@ -325,6 +357,9 @@ void toString(IrToStringContext& ctx, IrOp op)
     {
     case IrOpKind::None:
         break;
+    case IrOpKind::Undef:
+        append(ctx.result, "undef");
+        break;
     case IrOpKind::Constant:
         toString(ctx.result, ctx.constants[op.index]);
         break;
@@ -364,7 +399,10 @@ void toString(std::string& result, IrConst constant)
         append(result, "%uu", constant.valueUint);
         break;
     case IrConstKind::Double:
-        append(result, "%.17g", constant.valueDouble);
+        if (constant.valueDouble != constant.valueDouble)
+            append(result, "nan");
+        else
+            append(result, "%.17g", constant.valueDouble);
         break;
     case IrConstKind::Tag:
         result.append(getTagName(constant.valueTag));

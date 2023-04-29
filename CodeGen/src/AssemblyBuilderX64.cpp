@@ -144,6 +144,16 @@ void AssemblyBuilderX64::shr(OperandX64 lhs, OperandX64 rhs)
     placeShift("shr", lhs, rhs, 5);
 }
 
+void AssemblyBuilderX64::rol(OperandX64 lhs, OperandX64 rhs)
+{
+    placeShift("rol", lhs, rhs, 0);
+}
+
+void AssemblyBuilderX64::ror(OperandX64 lhs, OperandX64 rhs)
+{
+    placeShift("ror", lhs, rhs, 1);
+}
+
 void AssemblyBuilderX64::mov(OperandX64 lhs, OperandX64 rhs)
 {
     if (logText)
@@ -458,6 +468,34 @@ void AssemblyBuilderX64::int3()
         log("int3");
 
     place(0xcc);
+    commit();
+}
+
+void AssemblyBuilderX64::bsr(RegisterX64 dst, OperandX64 src)
+{
+    if (logText)
+        log("bsr", dst, src);
+
+    LUAU_ASSERT(dst.size == SizeX64::dword || dst.size == SizeX64::qword);
+
+    placeRex(dst, src);
+    place(0x0f);
+    place(0xbd);
+    placeRegAndModRegMem(dst, src);
+    commit();
+}
+
+void AssemblyBuilderX64::bsf(RegisterX64 dst, OperandX64 src)
+{
+    if (logText)
+        log("bsf", dst, src);
+
+    LUAU_ASSERT(dst.size == SizeX64::dword || dst.size == SizeX64::qword);
+
+    placeRex(dst, src);
+    place(0x0f);
+    place(0xbc);
+    placeRegAndModRegMem(dst, src);
     commit();
 }
 
@@ -793,7 +831,7 @@ void AssemblyBuilderX64::vblendvpd(RegisterX64 dst, RegisterX64 src1, OperandX64
     placeAvx("vblendvpd", dst, src1, mask, src3.index << 4, 0x4b, false, AVX_0F3A, AVX_66);
 }
 
-void AssemblyBuilderX64::finalize()
+bool AssemblyBuilderX64::finalize()
 {
     code.resize(codePos - code.data());
 
@@ -815,6 +853,8 @@ void AssemblyBuilderX64::finalize()
     data.resize(dataSize);
 
     finalized = true;
+
+    return true;
 }
 
 Label AssemblyBuilderX64::setLabel()
