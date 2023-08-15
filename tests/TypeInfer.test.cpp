@@ -78,9 +78,37 @@ TEST_CASE_FIXTURE(Fixture, "infer_locals_via_assignment_from_its_call_site")
         f("foo")
     )");
 
-    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        CHECK("number | string" == toString(requireType("a")));
+        CHECK("(number | string) -> ()" == toString(requireType("f")));
 
-    CHECK_EQ("number", toString(requireType("a")));
+        LUAU_REQUIRE_NO_ERRORS(result);
+    }
+    else
+    {
+        LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+        CHECK_EQ("number", toString(requireType("a")));
+    }
+}
+TEST_CASE_FIXTURE(Fixture, "interesting_local_type_inference_case")
+{
+    ScopedFastFlag sff[] = {
+        {"DebugLuauDeferredConstraintResolution", true},
+    };
+
+    CheckResult result = check(R"(
+        local a
+        function f(x) a = x end
+        f({x = 5})
+        f({x = 5})
+    )");
+
+    CHECK("{ x: number }" == toString(requireType("a")));
+    CHECK("({ x: number }) -> ()" == toString(requireType("f")));
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(Fixture, "infer_in_nocheck_mode")
@@ -224,7 +252,7 @@ TEST_CASE_FIXTURE(Fixture, "crazy_complexity")
         A:A():A():A():A():A():A():A():A():A():A():A()
     )");
 
-    std::cout << "OK!  Allocated " << typeChecker.types.size() << " types" << std::endl;
+    MESSAGE("OK!  Allocated ", typeChecker.types.size(), " types");
 }
 #endif
 
@@ -964,6 +992,9 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "cli_50041_committing_txnlog_in_apollo_client_error")
 {
+    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
+    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
+
     CheckResult result = check(R"(
         --!strict
         --!nolint
@@ -1000,16 +1031,23 @@ TEST_CASE_FIXTURE(Fixture, "cli_50041_committing_txnlog_in_apollo_client_error")
         // unsound.
 
         LUAU_REQUIRE_ERROR_COUNT(1, result);
-
-        CHECK_EQ(
-            R"(Type 'Policies' from 'MainModule' could not be converted into 'Policies' from 'MainModule'
+        const std::string expected = R"(Type 'Policies' from 'MainModule' could not be converted into 'Policies' from 'MainModule'
 caused by:
-  Property 'getStoreFieldName' is not compatible. Type '(Policies, FieldSpecifier & {| from: number? |}) -> (a, b...)' could not be converted into '(Policies, FieldSpecifier) -> string'
+  Property 'getStoreFieldName' is not compatible. 
+Type
+    '(Policies, FieldSpecifier & {| from: number? |}) -> (a, b...)'
+could not be converted into
+    '(Policies, FieldSpecifier) -> string'
 caused by:
-  Argument #2 type is not compatible. Type 'FieldSpecifier' could not be converted into 'FieldSpecifier & {| from: number? |}'
+  Argument #2 type is not compatible. 
+Type
+    'FieldSpecifier'
+could not be converted into
+    'FieldSpecifier & {| from: number? |}'
 caused by:
-  Not all intersection parts are compatible. Table type 'FieldSpecifier' not compatible with type '{| from: number? |}' because the former has extra field 'fieldName')",
-            toString(result.errors[0]));
+  Not all intersection parts are compatible. 
+Table type 'FieldSpecifier' not compatible with type '{| from: number? |}' because the former has extra field 'fieldName')";
+        CHECK_EQ(expected, toString(result.errors[0]));
     }
     else
     {
@@ -1177,8 +1215,6 @@ end
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "typechecking_in_type_guards")
 {
-    ScopedFastFlag sff{"LuauTypecheckTypeguards", true};
-
     CheckResult result = check(R"(
 local a = type(foo) == 'nil'
 local b = typeof(foo) ~= 'nil'
@@ -1330,6 +1366,45 @@ TEST_CASE_FIXTURE(Fixture, "handle_self_referential_HasProp_constraints")
             end
         end
     )");
+}
+
+/* We had an issue where we were unifying two type packs
+ *
+ * free-2-0... and (string, free-4-0...)
+ *
+ * The correct thing to do here is to promote everything on the right side to
+ * level 2-0 before binding the left pack to the right.  If we fail to do this,
+ * then the code fragment here fails to typecheck because the argument and
+ * return types of C are generalized before we ever get to checking the body of
+ * C.
+ */
+TEST_CASE_FIXTURE(Fixture, "promote_tail_type_packs")
+{
+    CheckResult result = check(R"(
+        --!strict
+
+        local A: any = nil
+
+        local C
+        local D = A(
+            A({}, {
+                __call = function(a): string
+                    local E: string = C(a)
+                    return E
+                end
+            }),
+            {
+                F = function(s: typeof(C))
+                end
+            }
+        )
+
+        function C(b: any): string
+            return ''
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_SUITE_END();

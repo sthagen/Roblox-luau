@@ -163,6 +163,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/IostreamHelpers.h
     Analysis/include/Luau/JsonEmitter.h
     Analysis/include/Luau/Linter.h
+    Analysis/include/Luau/LinterConfig.h
     Analysis/include/Luau/LValue.h
     Analysis/include/Luau/Metamethods.h
     Analysis/include/Luau/Module.h
@@ -186,6 +187,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/TypeArena.h
     Analysis/include/Luau/TypeAttach.h
     Analysis/include/Luau/TypeChecker2.h
+    Analysis/include/Luau/TypeCheckLimits.h
     Analysis/include/Luau/TypedAllocator.h
     Analysis/include/Luau/TypeFamily.h
     Analysis/include/Luau/TypeInfer.h
@@ -193,6 +195,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/TypeUtils.h
     Analysis/include/Luau/Unifiable.h
     Analysis/include/Luau/Unifier.h
+    Analysis/include/Luau/Unifier2.h
     Analysis/include/Luau/UnifierSharedState.h
     Analysis/include/Luau/Variant.h
     Analysis/include/Luau/VisitType.h
@@ -219,6 +222,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/src/IostreamHelpers.cpp
     Analysis/src/JsonEmitter.cpp
     Analysis/src/Linter.cpp
+    Analysis/src/LinterConfig.cpp
     Analysis/src/LValue.cpp
     Analysis/src/Module.cpp
     Analysis/src/Normalize.cpp
@@ -245,6 +249,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/src/TypeUtils.cpp
     Analysis/src/Unifiable.cpp
     Analysis/src/Unifier.cpp
+    Analysis/src/Unifier2.cpp
 )
 
 # Luau.VM Sources
@@ -423,6 +428,7 @@ if(TARGET Luau.UnitTest)
         tests/TypeInfer.unknownnever.test.cpp
         tests/TypePack.test.cpp
         tests/TypeVar.test.cpp
+        tests/Unifier2.test.cpp
         tests/Variant.test.cpp
         tests/VisitType.test.cpp
         tests/InsertionOrderedMap.test.cpp

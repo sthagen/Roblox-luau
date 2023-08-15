@@ -1,10 +1,8 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "IrLoweringA64.h"
 
-#include "Luau/CodeGen.h"
 #include "Luau/DenseHash.h"
-#include "Luau/IrAnalysis.h"
-#include "Luau/IrDump.h"
+#include "Luau/IrData.h"
 #include "Luau/IrUtils.h"
 
 #include "EmitCommonA64.h"
@@ -189,7 +187,7 @@ IrLoweringA64::IrLoweringA64(AssemblyBuilderA64& build, ModuleHelpers& helpers, 
     });
 }
 
-void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
+void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
 {
     valueTracker.beforeInstLowering(inst);
 
@@ -312,6 +310,14 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         // note: this may clobber inst.a, so it's important that we don't use it after this
         build.ldr(inst.regA64, mem(regOp(inst.a), offsetof(Table, node)));
         build.add(inst.regA64, inst.regA64, zextReg(temp2), kLuaNodeSizeLog2);
+        break;
+    }
+    case IrCmd::GET_CLOSURE_UPVAL_ADDR:
+    {
+        inst.regA64 = regs.allocReuse(KindA64::x, index, {inst.a});
+        RegisterA64 cl = inst.a.kind == IrOpKind::Undef ? rClosure : regOp(inst.a);
+
+        build.add(inst.regA64, cl, uint16_t(offsetof(Closure, l.uprefs) + sizeof(TValue) * vmUpvalueOp(inst.b)));
         break;
     }
     case IrCmd::STORE_TAG:
@@ -530,8 +536,35 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         }
         break;
     }
+    case IrCmd::CMP_ANY:
+    {
+        IrCondition cond = conditionOp(inst.c);
+
+        regs.spill(build, index);
+        build.mov(x0, rState);
+        build.add(x1, rBase, uint16_t(vmRegOp(inst.a) * sizeof(TValue)));
+        build.add(x2, rBase, uint16_t(vmRegOp(inst.b) * sizeof(TValue)));
+
+        if (cond == IrCondition::LessEqual)
+            build.ldr(x3, mem(rNativeContext, offsetof(NativeContext, luaV_lessequal)));
+        else if (cond == IrCondition::Less)
+            build.ldr(x3, mem(rNativeContext, offsetof(NativeContext, luaV_lessthan)));
+        else if (cond == IrCondition::Equal)
+            build.ldr(x3, mem(rNativeContext, offsetof(NativeContext, luaV_equalval)));
+        else
+            LUAU_ASSERT(!"Unsupported condition");
+
+        build.blr(x3);
+
+        emitUpdateBase(build);
+
+        // since w0 came from a call, we need to move it so that we don't violate zextReg safety contract
+        inst.regA64 = regs.allocReg(KindA64::w, index);
+        build.mov(inst.regA64, w0);
+        break;
+    }
     case IrCmd::JUMP:
-        if (inst.a.kind == IrOpKind::VmExit)
+        if (inst.a.kind == IrOpKind::Undef || inst.a.kind == IrOpKind::VmExit)
         {
             Label fresh;
             build.b(getTargetLabel(inst.a, fresh));
@@ -660,35 +693,6 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         }
 
         build.b(getConditionFP(cond), labelOp(inst.d));
-        jumpOrFallthrough(blockOp(inst.e), next);
-        break;
-    }
-    case IrCmd::JUMP_CMP_ANY:
-    {
-        IrCondition cond = conditionOp(inst.c);
-
-        regs.spill(build, index);
-        build.mov(x0, rState);
-        build.add(x1, rBase, uint16_t(vmRegOp(inst.a) * sizeof(TValue)));
-        build.add(x2, rBase, uint16_t(vmRegOp(inst.b) * sizeof(TValue)));
-
-        if (cond == IrCondition::NotLessEqual || cond == IrCondition::LessEqual)
-            build.ldr(x3, mem(rNativeContext, offsetof(NativeContext, luaV_lessequal)));
-        else if (cond == IrCondition::NotLess || cond == IrCondition::Less)
-            build.ldr(x3, mem(rNativeContext, offsetof(NativeContext, luaV_lessthan)));
-        else if (cond == IrCondition::NotEqual || cond == IrCondition::Equal)
-            build.ldr(x3, mem(rNativeContext, offsetof(NativeContext, luaV_equalval)));
-        else
-            LUAU_ASSERT(!"Unsupported condition");
-
-        build.blr(x3);
-
-        emitUpdateBase(build);
-
-        if (cond == IrCondition::NotLessEqual || cond == IrCondition::NotLess || cond == IrCondition::NotEqual)
-            build.cbz(x0, labelOp(inst.d));
-        else
-            build.cbnz(x0, labelOp(inst.d));
         jumpOrFallthrough(blockOp(inst.e), next);
         break;
     }
@@ -1041,20 +1045,56 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         break;
     case IrCmd::CHECK_TAG:
     {
-        bool continueInVm = (inst.d.kind == IrOpKind::Constant && intOp(inst.d));
         Label fresh; // used when guard aborts execution or jumps to a VM exit
-        Label& fail = continueInVm ? helpers.exitContinueVmClearNativeFlag : getTargetLabel(inst.c, fresh);
+        Label& fail = getTargetLabel(inst.c, fresh);
+
+        // To support DebugLuauAbortingChecks, CHECK_TAG with VmReg has to be handled
+        RegisterA64 tag = inst.a.kind == IrOpKind::VmReg ? regs.allocTemp(KindA64::w) : regOp(inst.a);
+
+        if (inst.a.kind == IrOpKind::VmReg)
+            build.ldr(tag, mem(rBase, vmRegOp(inst.a) * sizeof(TValue) + offsetof(TValue, tt)));
+
         if (tagOp(inst.b) == 0)
         {
-            build.cbnz(regOp(inst.a), fail);
+            build.cbnz(tag, fail);
         }
         else
         {
-            build.cmp(regOp(inst.a), tagOp(inst.b));
+            build.cmp(tag, tagOp(inst.b));
             build.b(ConditionA64::NotEqual, fail);
         }
-        if (!continueInVm)
-            finalizeTargetLabel(inst.c, fresh);
+
+        finalizeTargetLabel(inst.c, fresh);
+        break;
+    }
+    case IrCmd::CHECK_TRUTHY:
+    {
+        // Constant tags which don't require boolean value check should've been removed in constant folding
+        LUAU_ASSERT(inst.a.kind != IrOpKind::Constant || tagOp(inst.a) == LUA_TBOOLEAN);
+
+        Label fresh; // used when guard aborts execution or jumps to a VM exit
+        Label& target = getTargetLabel(inst.c, fresh);
+
+        Label skip;
+
+        if (inst.a.kind != IrOpKind::Constant)
+        {
+            // fail to fallback on 'nil' (falsy)
+            LUAU_ASSERT(LUA_TNIL == 0);
+            build.cbz(regOp(inst.a), target);
+
+            // skip value test if it's not a boolean (truthy)
+            build.cmp(regOp(inst.a), LUA_TBOOLEAN);
+            build.b(ConditionA64::NotEqual, skip);
+        }
+
+        // fail to fallback on 'false' boolean value (falsy)
+        build.cbz(regOp(inst.b), target);
+
+        if (inst.a.kind != IrOpKind::Constant)
+            build.setLabel(skip);
+
+        finalizeTargetLabel(inst.c, fresh);
         break;
     }
     case IrCmd::CHECK_READONLY:
@@ -1515,15 +1555,47 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         LUAU_ASSERT(inst.c.kind == IrOpKind::Constant);
 
         regs.spill(build, index);
-        emitFallback(build, offsetof(NativeContext, executeGETVARARGS), uintOp(inst.a));
-        break;
-    case IrCmd::FALLBACK_NEWCLOSURE:
-        LUAU_ASSERT(inst.b.kind == IrOpKind::VmReg);
-        LUAU_ASSERT(inst.c.kind == IrOpKind::Constant);
+        build.mov(x0, rState);
 
-        regs.spill(build, index);
-        emitFallback(build, offsetof(NativeContext, executeNEWCLOSURE), uintOp(inst.a));
+        if (intOp(inst.c) == LUA_MULTRET)
+        {
+            emitAddOffset(build, x1, rCode, uintOp(inst.a) * sizeof(Instruction));
+            build.mov(x2, rBase);
+            build.mov(x3, vmRegOp(inst.b));
+            build.ldr(x4, mem(rNativeContext, offsetof(NativeContext, executeGETVARARGSMultRet)));
+            build.blr(x4);
+
+            emitUpdateBase(build);
+        }
+        else
+        {
+            build.mov(x1, rBase);
+            build.mov(x2, vmRegOp(inst.b));
+            build.mov(x3, intOp(inst.c));
+            build.ldr(x4, mem(rNativeContext, offsetof(NativeContext, executeGETVARARGSConst)));
+            build.blr(x4);
+        }
         break;
+    case IrCmd::NEWCLOSURE:
+    {
+        RegisterA64 reg = regOp(inst.b); // note: we need to call regOp before spill so that we don't do redundant reloads
+
+        regs.spill(build, index, {reg});
+        build.mov(x2, reg);
+
+        build.mov(x0, rState);
+        build.mov(w1, uintOp(inst.a));
+
+        build.ldr(x3, mem(rClosure, offsetof(Closure, l.p)));
+        build.ldr(x3, mem(x3, offsetof(Proto, p)));
+        build.ldr(x3, mem(x3, sizeof(Proto*) * uintOp(inst.c)));
+
+        build.ldr(x4, mem(rNativeContext, offsetof(NativeContext, luaF_newLclosure)));
+        build.blr(x4);
+
+        inst.regA64 = regs.takeReg(x0, index);
+        break;
+    }
     case IrCmd::FALLBACK_DUPCLOSURE:
         LUAU_ASSERT(inst.b.kind == IrOpKind::VmReg);
         LUAU_ASSERT(inst.c.kind == IrOpKind::VmConst);
@@ -1743,6 +1815,18 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, IrBlock& next)
         break;
     }
 
+    case IrCmd::FINDUPVAL:
+    {
+        regs.spill(build, index);
+        build.mov(x0, rState);
+        build.add(x1, rBase, uint16_t(vmRegOp(inst.a) * sizeof(TValue)));
+        build.ldr(x2, mem(rNativeContext, offsetof(NativeContext, luaF_findupval)));
+        build.blr(x2);
+
+        inst.regA64 = regs.takeReg(x0, index);
+        break;
+    }
+
         // To handle unsupported instructions, add "case IrCmd::OP" and make sure to set error = true!
     }
 
@@ -1775,7 +1859,10 @@ void IrLoweringA64::finishFunction()
 
     for (ExitHandler& handler : exitHandlers)
     {
+        LUAU_ASSERT(handler.pcpos != kVmExitEntryGuardPc);
+
         build.setLabel(handler.self);
+
         build.mov(x0, handler.pcpos * sizeof(Instruction));
         build.b(helpers.updatePcAndContinueInVm);
     }
@@ -1786,12 +1873,12 @@ bool IrLoweringA64::hasError() const
     return error || regs.error;
 }
 
-bool IrLoweringA64::isFallthroughBlock(IrBlock target, IrBlock next)
+bool IrLoweringA64::isFallthroughBlock(const IrBlock& target, const IrBlock& next)
 {
     return target.start == next.start;
 }
 
-void IrLoweringA64::jumpOrFallthrough(IrBlock& target, IrBlock& next)
+void IrLoweringA64::jumpOrFallthrough(IrBlock& target, const IrBlock& next)
 {
     if (!isFallthroughBlock(target, next))
         build.b(target.label);
@@ -1804,7 +1891,11 @@ Label& IrLoweringA64::getTargetLabel(IrOp op, Label& fresh)
 
     if (op.kind == IrOpKind::VmExit)
     {
-        if (uint32_t* index = exitHandlerMap.find(op.index))
+        // Special exit case that doesn't have to update pcpos
+        if (vmExitOp(op) == kVmExitEntryGuardPc)
+            return helpers.exitContinueVmClearNativeFlag;
+
+        if (uint32_t* index = exitHandlerMap.find(vmExitOp(op)))
             return exitHandlers[*index].self;
 
         return fresh;
@@ -1819,10 +1910,10 @@ void IrLoweringA64::finalizeTargetLabel(IrOp op, Label& fresh)
     {
         emitAbort(build, fresh);
     }
-    else if (op.kind == IrOpKind::VmExit && fresh.id != 0)
+    else if (op.kind == IrOpKind::VmExit && fresh.id != 0 && fresh.id != helpers.exitContinueVmClearNativeFlag.id)
     {
-        exitHandlerMap[op.index] = uint32_t(exitHandlers.size());
-        exitHandlers.push_back({fresh, op.index});
+        exitHandlerMap[vmExitOp(op)] = uint32_t(exitHandlers.size());
+        exitHandlers.push_back({fresh, vmExitOp(op)});
     }
 }
 

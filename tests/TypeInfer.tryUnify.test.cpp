@@ -345,8 +345,9 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "metatables_unify_against_shape_of_free_table
 {
     ScopedFastFlag sff[] = {
         {"LuauTransitiveSubtyping", true},
-        {"DebugLuauDeferredConstraintResolution", true},
+        {"LuauIndentTypeMismatch", true},
     };
+    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
 
     TableType::Props freeProps{
         {"foo", {builtinTypes->numberType}},
@@ -369,15 +370,18 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "metatables_unify_against_shape_of_free_table
     TypeId target = arena.addType(TableType{TableState::Unsealed, TypeLevel{}});
     TypeId metatable = arena.addType(MetatableType{target, mt});
 
+    state.enableNewSolver();
     state.tryUnify(metatable, free);
     state.log.commit();
 
     REQUIRE_EQ(state.errors.size(), 1);
-
-    std::string expected = "Type '{ @metatable {| __index: {| foo: string |} |}, {  } }' could not be converted into '{- foo: number -}'\n"
-                           "caused by:\n"
-                           "  Type 'number' could not be converted into 'string'";
-    CHECK_EQ(toString(state.errors[0]), expected);
+    const std::string expected = R"(Type
+    '{ @metatable {| __index: {| foo: string |} |}, {  } }'
+could not be converted into
+    '{- foo: number -}'
+caused by:
+  Type 'number' could not be converted into 'string')";
+    CHECK_EQ(expected, toString(state.errors[0]));
 }
 
 TEST_CASE_FIXTURE(TryUnifyFixture, "fuzz_tail_unification_issue")
@@ -439,11 +443,10 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "unifying_two_unions_under_dcr_does_not_creat
     const TypeId innerType = arena.freshType(nestedScope.get());
 
     ScopedFastFlag sffs[]{
-        {"DebugLuauDeferredConstraintResolution", true},
         {"LuauAlwaysCommitInferencesOfFunctionCalls", true},
     };
 
-    state.enableScopeTests();
+    state.enableNewSolver();
 
     SUBCASE("equal_scopes")
     {

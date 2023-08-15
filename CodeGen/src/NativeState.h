@@ -52,6 +52,8 @@ struct NativeContext
     size_t (*luaC_step)(lua_State* L, bool assist) = nullptr;
 
     void (*luaF_close)(lua_State* L, StkId level) = nullptr;
+    UpVal* (*luaF_findupval)(lua_State* L, StkId level) = nullptr;
+    Closure* (*luaF_newLclosure)(lua_State* L, int nelems, Table* e, Proto* p) = nullptr;
 
     const TValue* (*luaT_gettm)(Table* events, TMS event, TString* ename) = nullptr;
     const TString* (*luaT_objtypenamestr)(lua_State* L, const TValue* o) = nullptr;
@@ -96,7 +98,8 @@ struct NativeContext
     const Instruction* (*executeNAMECALL)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
     const Instruction* (*executeSETLIST)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
     const Instruction* (*executeFORGPREP)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
-    const Instruction* (*executeGETVARARGS)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    void (*executeGETVARARGSMultRet)(lua_State* L, const Instruction* pc, StkId base, int rai) = nullptr;
+    void (*executeGETVARARGSConst)(lua_State* L, StkId base, int rai, int b) = nullptr;
     const Instruction* (*executeDUPCLOSURE)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
     const Instruction* (*executePREPVARARGS)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
 
@@ -109,6 +112,7 @@ using GateFn = int (*)(lua_State*, Proto*, uintptr_t, NativeContext*);
 struct NativeState
 {
     NativeState();
+    NativeState(AllocationCallback* allocationCallback, void* allocationCallbackContext);
     ~NativeState();
 
     CodeAllocator codeAllocator;

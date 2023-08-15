@@ -21,6 +21,7 @@
 #include <algorithm>
 
 LUAU_FASTINT(LuauCheckRecursionLimit);
+LUAU_FASTFLAG(DebugLuauLogSolverToJson);
 LUAU_FASTFLAG(DebugLuauMagicTypes);
 LUAU_FASTFLAG(LuauParseDeclareClassIndexer);
 
@@ -137,18 +138,21 @@ void forEachConstraint(const Checkpoint& start, const Checkpoint& end, const Con
 
 } // namespace
 
-ConstraintGraphBuilder::ConstraintGraphBuilder(ModulePtr module, TypeArena* arena, NotNull<ModuleResolver> moduleResolver,
+ConstraintGraphBuilder::ConstraintGraphBuilder(ModulePtr module, NotNull<Normalizer> normalizer, NotNull<ModuleResolver> moduleResolver,
     NotNull<BuiltinTypes> builtinTypes, NotNull<InternalErrorReporter> ice, const ScopePtr& globalScope,
-    std::function<void(const ModuleName&, const ScopePtr&)> prepareModuleScope, DcrLogger* logger, NotNull<DataFlowGraph> dfg)
+    std::function<void(const ModuleName&, const ScopePtr&)> prepareModuleScope, DcrLogger* logger, NotNull<DataFlowGraph> dfg,
+    std::vector<RequireCycle> requireCycles)
     : module(module)
     , builtinTypes(builtinTypes)
-    , arena(arena)
+    , arena(normalizer->arena)
     , rootScope(nullptr)
     , dfg(dfg)
+    , normalizer(normalizer)
     , moduleResolver(moduleResolver)
     , ice(ice)
     , globalScope(globalScope)
     , prepareModuleScope(std::move(prepareModuleScope))
+    , requireCycles(std::move(requireCycles))
     , logger(logger)
 {
     LUAU_ASSERT(module);
@@ -156,7 +160,7 @@ ConstraintGraphBuilder::ConstraintGraphBuilder(ModulePtr module, TypeArena* aren
 
 TypeId ConstraintGraphBuilder::freshType(const ScopePtr& scope)
 {
-    return arena->addType(FreeType{scope.get()});
+    return Luau::freshType(arena, builtinTypes, scope.get());
 }
 
 TypePackId ConstraintGraphBuilder::freshTypePack(const ScopePtr& scope)
@@ -412,7 +416,22 @@ void ConstraintGraphBuilder::applyRefinements(const ScopePtr& scope, Location lo
                     ty = r;
                 }
                 else
-                    ty = simplifyIntersection(builtinTypes, arena, ty, dt).result;
+                {
+                    switch (shouldSuppressErrors(normalizer, ty))
+                    {
+                        case ErrorSuppression::DoNotSuppress:
+                            ty = simplifyIntersection(builtinTypes, arena, ty, dt).result;
+                            break;
+                        case ErrorSuppression::Suppress:
+                            ty = simplifyIntersection(builtinTypes, arena, ty, dt).result;
+                            ty = simplifyUnion(builtinTypes, arena, ty, builtinTypes->errorType).result;
+                            break;
+                        case ErrorSuppression::NormalizationFailed:
+                            reportError(location, NormalizationTooComplex{});
+                            ty = simplifyIntersection(builtinTypes, arena, ty, dt).result;
+                            break;
+                    }
+                }
             }
 
             scope->dcrRefinements[def] = ty;
@@ -703,6 +722,16 @@ ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatLocal* l
                     {
                         scope->importedTypeBindings[name] = module->exportedTypeBindings;
                         scope->importedModules[name] = moduleInfo->name;
+
+                        // Imported types of requires that transitively refer to current module have to be replaced with 'any'
+                        for (const auto& [location, path] : requireCycles)
+                        {
+                            if (!path.empty() && path.front() == moduleInfo->name)
+                            {
+                                for (auto& [name, tf] : scope->importedTypeBindings[name])
+                                    tf = TypeFun{{}, {}, builtinTypes->anyType};
+                            }
+                        }
                     }
                 }
             }
@@ -765,7 +794,7 @@ ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatForIn* f
     }
 
     // It is always ok to provide too few variables, so we give this pack a free tail.
-    TypePackId variablePack = arena->addTypePack(std::move(variableTypes), arena->addTypePack(FreeTypePack{loopScope.get()}));
+    TypePackId variablePack = arena->addTypePack(std::move(variableTypes), freshTypePack(loopScope));
 
     addConstraint(
         loopScope, getLocation(forIn->values), IterableConstraint{iterator, variablePack, forIn->values.data[0], &module->astForInNextTypes});
@@ -970,6 +999,7 @@ ControlFlow ConstraintGraphBuilder::visit(const ScopePtr& scope, AstStatBlock* b
     return flow;
 }
 
+// TODO Clip?
 static void bindFreeType(TypeId a, TypeId b)
 {
     FreeType* af = getMutable<FreeType>(a);
@@ -1476,7 +1506,7 @@ InferencePack ConstraintGraphBuilder::checkPack(const ScopePtr& scope, AstExprCa
             if (selfTy)
                 args.push_back(*selfTy);
             else
-                args.push_back(arena->freshType(scope.get()));
+                args.push_back(freshType(scope));
         }
         else if (i < exprArgs.size() - 1 || !(arg->is<AstExprCall>() || arg->is<AstExprVarargs>()))
         {
@@ -1913,6 +1943,9 @@ std::tuple<TypeId, TypeId, RefinementId> ConstraintGraphBuilder::checkBinary(
         NullableBreadcrumbId bc = dfg->getBreadcrumb(typeguard->target);
         if (!bc)
             return {leftType, rightType, nullptr};
+        auto augmentForErrorSupression = [&](TypeId ty) -> TypeId {
+            return arena->addType(UnionType{{ty, builtinTypes->errorType}});
+        };
 
         TypeId discriminantTy = builtinTypes->neverType;
         if (typeguard->type == "nil")
@@ -1926,9 +1959,9 @@ std::tuple<TypeId, TypeId, RefinementId> ConstraintGraphBuilder::checkBinary(
         else if (typeguard->type == "thread")
             discriminantTy = builtinTypes->threadType;
         else if (typeguard->type == "table")
-            discriminantTy = builtinTypes->tableType;
+            discriminantTy = augmentForErrorSupression(builtinTypes->tableType);
         else if (typeguard->type == "function")
-            discriminantTy = builtinTypes->functionType;
+            discriminantTy = augmentForErrorSupression(builtinTypes->functionType);
         else if (typeguard->type == "userdata")
         {
             // For now, we don't really care about being accurate with userdata if the typeguard was using typeof.
@@ -2133,6 +2166,8 @@ TypeId ConstraintGraphBuilder::checkLValue(const ScopePtr& scope, AstExpr* expr)
 
 Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprTable* expr, std::optional<TypeId> expectedType)
 {
+    const bool expectedTypeIsFree = expectedType && get<FreeType>(follow(*expectedType));
+
     TypeId ty = arena->addType(TableType{});
     TableType* ttv = getMutable<TableType>(ty);
     LUAU_ASSERT(ttv);
@@ -2177,7 +2212,7 @@ Inference ConstraintGraphBuilder::check(const ScopePtr& scope, AstExprTable* exp
         if (item.kind == AstExprTable::Item::Kind::General || item.kind == AstExprTable::Item::Kind::List)
             isIndexedResultType = true;
 
-        if (item.key && expectedType)
+        if (item.key && expectedType && !expectedTypeIsFree)
         {
             if (auto stringKey = item.key->as<AstExprConstantString>())
             {

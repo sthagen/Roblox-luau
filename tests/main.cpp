@@ -161,8 +161,10 @@ struct BoostLikeReporter : doctest::IReporter
     }
 
     void log_message(const doctest::MessageData& md) override
-    { //
-        printf("%s(%d): ERROR: %s\n", md.m_file, md.m_line, md.m_string.c_str());
+    {
+        const char* severity = (md.m_severity & doctest::assertType::is_warn) ? "WARNING" : "ERROR";
+
+        printf("%s(%d): %s: %s\n", md.m_file, md.m_line, severity, md.m_string.c_str());
     }
 
     // called when a test case is skipped either because it doesn't pass the filters, has a skip decorator
@@ -201,7 +203,7 @@ static FValueResult<bool> parseFFlag(std::string_view view)
     auto [name, value] = parseFValueHelper(view);
     bool state = value ? *value == "true" : true;
     if (value && value != "true" && value != "false")
-        std::cerr << "Ignored '" << name << "' because '" << *value << "' is not a valid FFlag state." << std::endl;
+        fprintf(stderr, "Ignored '%s' because '%s' is not a valid flag state\n", name.c_str(), value->c_str());
 
     return {name, state};
 }
@@ -264,9 +266,7 @@ int main(int argc, char** argv)
             if (skipFastFlag(flag->name))
                 continue;
 
-            if (flag->dynamic)
-                std::cout << 'D';
-            std::cout << "FFlag" << flag->name << std::endl;
+            printf("%sFFlag%s\n", flag->dynamic ? "D" : "", flag->name);
         }
 
         return 0;
@@ -286,7 +286,7 @@ int main(int argc, char** argv)
     if (doctest::parseIntOption(argc, argv, "-O", doctest::option_int, level))
     {
         if (level < 0 || level > 2)
-            std::cerr << "Optimization level must be between 0 and 2 inclusive." << std::endl;
+            fprintf(stderr, "Optimization level must be between 0 and 2 inclusive\n");
         else
             optimizationLevel = level;
     }

@@ -77,7 +77,6 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
     case IrCmd::FALLBACK_GETVARARGS:
         invalidateRestoreVmRegs(vmRegOp(inst.b), function.intOp(inst.c));
         break;
-    case IrCmd::FALLBACK_NEWCLOSURE:
     case IrCmd::FALLBACK_DUPCLOSURE:
         invalidateRestoreOp(inst.b);
         break;
@@ -91,9 +90,9 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
     case IrCmd::LOAD_DOUBLE:
     case IrCmd::LOAD_INT:
     case IrCmd::LOAD_TVALUE:
+    case IrCmd::CMP_ANY:
     case IrCmd::JUMP_IF_TRUTHY:
     case IrCmd::JUMP_IF_FALSY:
-    case IrCmd::JUMP_CMP_ANY:
     case IrCmd::SET_TABLE:
     case IrCmd::SET_UPVALUE:
     case IrCmd::INTERRUPT:
@@ -109,10 +108,13 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
     case IrCmd::FALLBACK_PREPVARARGS:
     case IrCmd::ADJUST_STACK_TO_TOP:
     case IrCmd::GET_TYPEOF:
+    case IrCmd::NEWCLOSURE:
+    case IrCmd::FINDUPVAL:
         break;
 
         // These instrucitons read VmReg only after optimizeMemoryOperandsX64
     case IrCmd::CHECK_TAG:
+    case IrCmd::CHECK_TRUTHY:
     case IrCmd::ADD_NUM:
     case IrCmd::SUB_NUM:
     case IrCmd::MUL_NUM:

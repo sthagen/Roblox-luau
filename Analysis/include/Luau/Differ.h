@@ -1,9 +1,12 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
+#include "Luau/DenseHash.h"
 #include "Luau/Type.h"
+#include "Luau/UnifierSharedState.h"
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace Luau
 {
@@ -17,6 +20,7 @@ struct DiffPathNode
         FunctionReturn,
         Union,
         Intersection,
+        Negation,
     };
     Kind kind;
     // non-null when TableProperty
@@ -54,17 +58,23 @@ struct DiffPathNodeLeaf
     std::optional<Name> tableProperty;
     std::optional<int> minLength;
     bool isVariadic;
-    DiffPathNodeLeaf(std::optional<TypeId> ty, std::optional<Name> tableProperty, std::optional<int> minLength, bool isVariadic)
+    // TODO: Rename to anonymousIndex, for both union and Intersection
+    std::optional<size_t> unionIndex;
+    DiffPathNodeLeaf(
+        std::optional<TypeId> ty, std::optional<Name> tableProperty, std::optional<int> minLength, bool isVariadic, std::optional<size_t> unionIndex)
         : ty(ty)
         , tableProperty(tableProperty)
         , minLength(minLength)
         , isVariadic(isVariadic)
+        , unionIndex(unionIndex)
     {
     }
 
     static DiffPathNodeLeaf detailsNormal(TypeId ty);
 
     static DiffPathNodeLeaf detailsTableProperty(TypeId ty, Name tableProperty);
+
+    static DiffPathNodeLeaf detailsUnionIndex(TypeId ty, size_t index);
 
     static DiffPathNodeLeaf detailsLength(int minLength, bool isVariadic);
 
@@ -82,11 +92,12 @@ struct DiffError
     enum Kind
     {
         Normal,
-        MissingProperty,
+        MissingTableProperty,
+        MissingUnionMember,
+        MissingIntersectionMember,
+        IncompatibleGeneric,
         LengthMismatchInFnArgs,
         LengthMismatchInFnRets,
-        LengthMismatchInUnion,
-        LengthMismatchInIntersection,
     };
     Kind kind;
 
@@ -117,10 +128,10 @@ struct DiffError
         checkValidInitialization(left, right);
     }
 
-    std::string toString() const;
+    std::string toString(bool multiLine = false) const;
 
 private:
-    std::string toStringALeaf(std::string rootName, const DiffPathNodeLeaf& leaf, const DiffPathNodeLeaf& otherLeaf) const;
+    std::string toStringALeaf(std::string rootName, const DiffPathNodeLeaf& leaf, const DiffPathNodeLeaf& otherLeaf, bool multiLine) const;
     void checkValidInitialization(const DiffPathNodeLeaf& left, const DiffPathNodeLeaf& right);
     void checkNonMissingPropertyLeavesHaveNulloptTableProperty() const;
 };
@@ -141,8 +152,41 @@ struct DifferEnvironment
 {
     TypeId rootLeft;
     TypeId rootRight;
+    std::optional<std::string> externalSymbolLeft;
+    std::optional<std::string> externalSymbolRight;
+    DenseHashMap<TypeId, TypeId> genericMatchedPairs;
+    DenseHashMap<TypePackId, TypePackId> genericTpMatchedPairs;
+
+    DifferEnvironment(
+        TypeId rootLeft, TypeId rootRight, std::optional<std::string> externalSymbolLeft, std::optional<std::string> externalSymbolRight)
+        : rootLeft(rootLeft)
+        , rootRight(rootRight)
+        , externalSymbolLeft(externalSymbolLeft)
+        , externalSymbolRight(externalSymbolRight)
+        , genericMatchedPairs(nullptr)
+        , genericTpMatchedPairs(nullptr)
+    {
+    }
+
+    bool isProvenEqual(TypeId left, TypeId right) const;
+    bool isAssumedEqual(TypeId left, TypeId right) const;
+    void recordProvenEqual(TypeId left, TypeId right);
+    void pushVisiting(TypeId left, TypeId right);
+    void popVisiting();
+    std::vector<std::pair<TypeId, TypeId>>::const_reverse_iterator visitingBegin() const;
+    std::vector<std::pair<TypeId, TypeId>>::const_reverse_iterator visitingEnd() const;
+    std::string getDevFixFriendlyNameLeft() const;
+    std::string getDevFixFriendlyNameRight() const;
+
+private:
+    // TODO: consider using DenseHashSet
+    std::unordered_set<std::pair<TypeId, TypeId>, TypeIdPairHash> provenEqual;
+    // Ancestors of current types
+    std::unordered_set<std::pair<TypeId, TypeId>, TypeIdPairHash> visiting;
+    std::vector<std::pair<TypeId, TypeId>> visitingStack;
 };
 DifferResult diff(TypeId ty1, TypeId ty2);
+DifferResult diffWithSymbols(TypeId ty1, TypeId ty2, std::optional<std::string> symbol1, std::optional<std::string> symbol2);
 
 /**
  * True if ty is a "simple" type, i.e. cannot contain types.

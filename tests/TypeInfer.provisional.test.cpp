@@ -1,5 +1,6 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/TypeInfer.h"
+#include "Luau/RecursionCounter.h"
 
 #include "Fixture.h"
 
@@ -8,6 +9,8 @@
 #include <algorithm>
 
 using namespace Luau;
+
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
 
 TEST_SUITE_BEGIN("ProvisionalTests");
 
@@ -502,6 +505,9 @@ TEST_CASE_FIXTURE(Fixture, "free_options_cannot_be_unified_together")
     Normalizer normalizer{&arena, builtinTypes, NotNull{&sharedState}};
     Unifier u{NotNull{&normalizer}, NotNull{scope.get()}, Location{}, Variance::Covariant};
 
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        u.enableNewSolver();
+
     u.tryUnify(option1, option2);
 
     CHECK(!u.failure);
@@ -565,7 +571,7 @@ return wrapStrictTable(Constants, "Constants")
     std::optional<TypeId> result = first(m->returnType);
     REQUIRE(result);
     if (FFlag::DebugLuauDeferredConstraintResolution)
-        CHECK_EQ("(any & ~table)?", toString(*result));
+        CHECK_EQ("(any & ~(*error-type* | table))?", toString(*result));
     else
         CHECK_MESSAGE(get<AnyType>(*result), *result);
 }
@@ -781,6 +787,9 @@ TEST_CASE_FIXTURE(IsSubtypeFixture, "functions_with_mismatching_arity_but_any_is
 
 TEST_CASE_FIXTURE(Fixture, "assign_table_with_refined_property_with_a_similar_type_is_illegal")
 {
+    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
+    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
+
     CheckResult result = check(R"(
         local t: {x: number?} = {x = nil}
 
@@ -790,11 +799,14 @@ TEST_CASE_FIXTURE(Fixture, "assign_table_with_refined_property_with_a_similar_ty
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-
-    CHECK_EQ(R"(Type '{| x: number? |}' could not be converted into '{| x: number |}'
+    const std::string expected = R"(Type
+    '{| x: number? |}'
+could not be converted into
+    '{| x: number |}'
 caused by:
-  Property 'x' is not compatible. Type 'number?' could not be converted into 'number' in an invariant context)",
-        toString(result.errors[0]));
+  Property 'x' is not compatible. 
+Type 'number?' could not be converted into 'number' in an invariant context)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "table_insert_with_a_singleton_argument")
@@ -905,6 +917,9 @@ TEST_CASE_FIXTURE(Fixture, "free_options_can_be_unified_together")
     Normalizer normalizer{&arena, builtinTypes, NotNull{&sharedState}};
     Unifier u{NotNull{&normalizer}, NotNull{scope.get()}, Location{}, Variance::Covariant};
 
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        u.enableNewSolver();
+
     u.tryUnify(option1, option2);
 
     CHECK(!u.failure);
@@ -989,6 +1004,50 @@ end
     CheckResult result = frontend.check("Module/Map");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+// We would prefer this unification to be able to complete, but at least it should not crash
+TEST_CASE_FIXTURE(BuiltinsFixture, "table_unification_infinite_recursion")
+{
+    ScopedFastFlag luauTableUnifyRecursionLimit{"LuauTableUnifyRecursionLimit", true};
+
+#if defined(_NOOPT) || defined(_DEBUG)
+    ScopedFastInt LuauTypeInferRecursionLimit{"LuauTypeInferRecursionLimit", 100};
+#endif
+
+    fileResolver.source["game/A"] = R"(
+local tbl = {}
+
+function tbl:f1(state)
+    self.someNonExistentvalue2 = state
+end
+
+function tbl:f2()
+    self.someNonExistentvalue:Dc()
+end
+
+function tbl:f3()
+    self:f2()
+    self:f1(false)
+end
+return tbl
+    )";
+
+    fileResolver.source["game/B"] = R"(
+local tbl = require(game.A)
+tbl:f3()
+    )";
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        // TODO: DCR should transform RecursionLimitException into a CodeTooComplex error (currently it rethows it as InternalCompilerError)
+        CHECK_THROWS_AS(frontend.check("game/B"), Luau::InternalCompilerError);
+    }
+    else
+    {
+        CheckResult result = frontend.check("game/B");
+        LUAU_REQUIRE_ERROR_COUNT(1, result);
+    }
 }
 
 TEST_SUITE_END();

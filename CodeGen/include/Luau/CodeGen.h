@@ -12,12 +12,31 @@ namespace Luau
 namespace CodeGen
 {
 
+enum CodeGenFlags
+{
+    // Only run native codegen for modules that have been marked with --!native
+    CodeGen_OnlyNativeModules = 1 << 0,
+};
+
+struct CompilationStats
+{
+    size_t bytecodeSizeBytes = 0;
+    size_t nativeCodeSizeBytes = 0;
+    size_t nativeDataSizeBytes = 0;
+    size_t nativeMetadataSizeBytes = 0;
+
+    uint32_t functionsCompiled = 0;
+};
+
+using AllocationCallback = void(void* context, void* oldPointer, size_t oldSize, void* newPointer, size_t newSize);
+
 bool isSupported();
 
+void create(lua_State* L, AllocationCallback* allocationCallback, void* allocationCallbackContext);
 void create(lua_State* L);
 
 // Builds target function and all inner functions
-void compile(lua_State* L, int idx);
+void compile(lua_State* L, int idx, unsigned int flags = 0, CompilationStats* stats = nullptr);
 
 using AnnotatorFn = void (*)(void* context, std::string& result, int fid, int instpos);
 

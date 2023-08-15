@@ -2,7 +2,7 @@
 #include "Luau/OptimizeConstProp.h"
 
 #include "Luau/DenseHash.h"
-#include "Luau/IrAnalysis.h"
+#include "Luau/IrData.h"
 #include "Luau/IrBuilder.h"
 #include "Luau/IrUtils.h"
 
@@ -415,6 +415,8 @@ static void handleBuiltinEffects(ConstPropState& state, LuauBuiltinFunction bfid
     case LBF_RAWLEN:
     case LBF_BIT32_EXTRACTK:
     case LBF_GETMETATABLE:
+    case LBF_TONUMBER:
+    case LBF_TOSTRING:
         break;
     case LBF_SETMETATABLE:
         state.invalidateHeap(); // TODO: only knownNoMetatable is affected and we might know which one
@@ -511,6 +513,15 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
         {
             state.invalidateValue(inst.a);
             state.forwardVmRegStoreToLoad(inst, IrCmd::LOAD_POINTER);
+
+            if (IrInst* instOp = function.asInstOp(inst.b); instOp && instOp->cmd == IrCmd::NEW_TABLE)
+            {
+                if (RegisterInfo* info = state.tryGetRegisterInfo(inst.a))
+                {
+                    info->knownNotReadonly = true;
+                    info->knownNoMetatable = true;
+                }
+            }
         }
         break;
     case IrCmd::STORE_DOUBLE:
@@ -679,6 +690,9 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
         }
         break;
     }
+    case IrCmd::CHECK_TRUTHY:
+        // It is possible to check if current tag in state is truthy or not, but this case almost never comes up
+        break;
     case IrCmd::CHECK_READONLY:
         if (RegisterInfo* info = state.tryGetRegisterInfo(inst.a))
         {
@@ -760,6 +774,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::GET_ARR_ADDR:
     case IrCmd::GET_SLOT_NODE_ADDR:
     case IrCmd::GET_HASH_NODE_ADDR:
+    case IrCmd::GET_CLOSURE_UPVAL_ADDR:
         break;
     case IrCmd::ADD_INT:
     case IrCmd::SUB_INT:
@@ -778,6 +793,9 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::ABS_NUM:
     case IrCmd::NOT_ANY:
         state.substituteOrRecord(inst, index);
+        break;
+    case IrCmd::CMP_ANY:
+        state.invalidateUserCall();
         break;
     case IrCmd::JUMP:
     case IrCmd::JUMP_EQ_POINTER:
@@ -823,6 +841,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::BITXOR_UINT:
     case IrCmd::BITOR_UINT:
     case IrCmd::BITNOT_UINT:
+        break;
     case IrCmd::BITLSHIFT_UINT:
     case IrCmd::BITRSHIFT_UINT:
     case IrCmd::BITARSHIFT_UINT:
@@ -833,11 +852,9 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::INVOKE_LIBM:
     case IrCmd::GET_TYPE:
     case IrCmd::GET_TYPEOF:
+    case IrCmd::FINDUPVAL:
         break;
 
-    case IrCmd::JUMP_CMP_ANY:
-        state.invalidateUserCall(); // TODO: if arguments are strings, there will be no user calls
-        break;
     case IrCmd::DO_ARITH:
         state.invalidate(inst.a);
         state.invalidateUserCall();
@@ -923,8 +940,7 @@ static void constPropInInst(ConstPropState& state, IrBuilder& build, IrFunction&
     case IrCmd::FALLBACK_GETVARARGS:
         state.invalidateRegisterRange(vmRegOp(inst.b), function.intOp(inst.c));
         break;
-    case IrCmd::FALLBACK_NEWCLOSURE:
-        state.invalidate(inst.b);
+    case IrCmd::NEWCLOSURE:
         break;
     case IrCmd::FALLBACK_DUPCLOSURE:
         state.invalidate(inst.b);

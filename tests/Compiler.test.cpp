@@ -4213,7 +4213,7 @@ RETURN R0 0
     bcb.setDumpFlags(Luau::BytecodeBuilder::Dump_Code);
     Luau::CompileOptions options;
     const char* mutableGlobals[] = {"Game", "Workspace", "game", "plugin", "script", "shared", "workspace", NULL};
-    options.mutableGlobals = &mutableGlobals[0];
+    options.mutableGlobals = mutableGlobals;
     Luau::compileOrThrow(bcb, source, options);
 
     CHECK_EQ("\n" + bcb.dumpFunction(0), R"(
@@ -6978,6 +6978,8 @@ L3: RETURN R0 0
 
 TEST_CASE("BuiltinArity")
 {
+    ScopedFastFlag sff("LuauCompileFixBuiltinArity", true);
+
     // by default we can't assume that we know parameter/result count for builtins as they can be overridden at runtime
     CHECK_EQ("\n" + compileFunction(R"(
 return math.abs(unknown())
@@ -7039,6 +7041,21 @@ CALL R0 -1 1
 L0: RETURN R0 1
 )");
 
+    // some builtins are not variadic and have a fixed number of arguments but are not none-safe, meaning that we can't replace calls that may
+    // return none with calls that will return nil
+    CHECK_EQ("\n" + compileFunction(R"(
+return type(unknown())
+)",
+                        0, 2),
+        R"(
+GETIMPORT R1 1 [unknown]
+CALL R1 0 -1
+FASTCALL 40 L0
+GETIMPORT R0 3 [type]
+CALL R0 -1 1
+L0: RETURN R0 1
+)");
+
     // importantly, this optimization also helps us get around the multret inlining restriction for builtin wrappers
     CHECK_EQ("\n" + compileFunction(R"(
 local function new()
@@ -7083,8 +7100,6 @@ L1: RETURN R3 1
 
 TEST_CASE("EncodedTypeTable")
 {
-    ScopedFastFlag sff("LuauCompileFunctionType", true);
-
     CHECK_EQ("\n" + compileTypeTable(R"(
 function myfunc(test: string, num: number)
     print(test)
@@ -7136,8 +7151,6 @@ Str:test(234)
 
 TEST_CASE("HostTypesAreUserdata")
 {
-    ScopedFastFlag sff("LuauCompileFunctionType", true);
-
     CHECK_EQ("\n" + compileTypeTable(R"(
 function myfunc(test: string, num: number)
     print(test)
@@ -7164,8 +7177,6 @@ end
 
 TEST_CASE("HostTypesVector")
 {
-    ScopedFastFlag sff("LuauCompileFunctionType", true);
-
     CHECK_EQ("\n" + compileTypeTable(R"(
 function myfunc(test: Instance, pos: Vector3)
 end
@@ -7189,8 +7200,6 @@ end
 
 TEST_CASE("TypeAliasScoping")
 {
-    ScopedFastFlag sff("LuauCompileFunctionType", true);
-
     CHECK_EQ("\n" + compileTypeTable(R"(
 do
     type Part = number
@@ -7225,8 +7234,6 @@ type Instance = string
 
 TEST_CASE("TypeAliasResolve")
 {
-    ScopedFastFlag sff("LuauCompileFunctionType", true);
-
     CHECK_EQ("\n" + compileTypeTable(R"(
 type Foo1 = number
 type Foo2 = { number }
@@ -7244,6 +7251,49 @@ end
         R"(
 0: function(number, table, userdata, any, any)
 1: function(number, any)
+)");
+}
+
+TEST_CASE("BuiltinFoldMathK")
+{
+    ScopedFastFlag sff("LuauCompileFoldMathK", true);
+
+    // we can fold math.pi at optimization level 2
+    CHECK_EQ("\n" + compileFunction(R"(
+function test()
+    return math.pi * 2
+end
+)", 0, 2),
+        R"(
+LOADK R0 K0 [6.2831853071795862]
+RETURN R0 1
+)");
+
+    // we don't do this at optimization level 1 because it may interfere with environment substitution
+    CHECK_EQ("\n" + compileFunction(R"(
+function test()
+    return math.pi * 2
+end
+)", 0, 1),
+        R"(
+GETIMPORT R1 3 [math.pi]
+MULK R0 R1 K0 [2]
+RETURN R0 1
+)");
+
+    // we also don't do it if math global is assigned to
+    CHECK_EQ("\n" + compileFunction(R"(
+function test()
+    return math.pi * 2
+end
+
+math = { pi = 4 }
+)", 0, 2),
+        R"(
+GETGLOBAL R2 K1 ['math']
+GETTABLEKS R1 R2 K2 ['pi']
+MULK R0 R1 K0 [2]
+RETURN R0 1
 )");
 }
 
