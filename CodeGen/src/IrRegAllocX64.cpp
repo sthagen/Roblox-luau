@@ -17,6 +17,7 @@ static const RegisterX64 kGprAllocOrder[] = {rax, rdx, rcx, rbx, rsi, rdi, r8, r
 IrRegAllocX64::IrRegAllocX64(AssemblyBuilderX64& build, IrFunction& function)
     : build(build)
     , function(function)
+    , usableXmmRegCount(getXmmRegisterCount(build.abi))
 {
     freeGprMap.fill(true);
     gprInstUsers.fill(kInvalidInstIdx);
@@ -28,7 +29,7 @@ RegisterX64 IrRegAllocX64::allocReg(SizeX64 size, uint32_t instIdx)
 {
     if (size == SizeX64::xmmword)
     {
-        for (size_t i = 0; i < freeXmmMap.size(); ++i)
+        for (size_t i = 0; i < usableXmmRegCount; ++i)
         {
             if (freeXmmMap[i])
             {
@@ -54,7 +55,12 @@ RegisterX64 IrRegAllocX64::allocReg(SizeX64 size, uint32_t instIdx)
     // Out of registers, spill the value with the furthest next use
     const std::array<uint32_t, 16>& regInstUsers = size == SizeX64::xmmword ? xmmInstUsers : gprInstUsers;
     if (uint32_t furthestUseTarget = findInstructionWithFurthestNextUse(regInstUsers); furthestUseTarget != kInvalidInstIdx)
-        return takeReg(function.instructions[furthestUseTarget].regX64, instIdx);
+    {
+        RegisterX64 reg = function.instructions[furthestUseTarget].regX64;
+        reg.size = size; // Adjust size to the requested
+
+        return takeReg(reg, instIdx);
+    }
 
     LUAU_ASSERT(!"Out of registers to allocate");
     return noreg;
@@ -332,7 +338,9 @@ unsigned IrRegAllocX64::findSpillStackSlot(IrValueKind valueKind)
 
 IrOp IrRegAllocX64::getRestoreOp(const IrInst& inst) const
 {
-    if (IrOp location = function.findRestoreOp(inst); location.kind == IrOpKind::VmReg || location.kind == IrOpKind::VmConst)
+    // When restoring the value, we allow cross-block restore because we have commited to the target location at spill time
+    if (IrOp location = function.findRestoreOp(inst, /*limitToCurrentBlock*/ false);
+        location.kind == IrOpKind::VmReg || location.kind == IrOpKind::VmConst)
         return location;
 
     return IrOp();
@@ -340,11 +348,16 @@ IrOp IrRegAllocX64::getRestoreOp(const IrInst& inst) const
 
 bool IrRegAllocX64::hasRestoreOp(const IrInst& inst) const
 {
-    return getRestoreOp(inst).kind != IrOpKind::None;
+    // When checking if value has a restore operation to spill it, we only allow it in the same block
+    IrOp location = function.findRestoreOp(inst, /*limitToCurrentBlock*/ true);
+
+    return location.kind == IrOpKind::VmReg || location.kind == IrOpKind::VmConst;
 }
 
 OperandX64 IrRegAllocX64::getRestoreAddress(const IrInst& inst, IrOp restoreOp)
 {
+    LUAU_ASSERT(restoreOp.kind != IrOpKind::None);
+
     switch (getCmdValueKind(inst.cmd))
     {
     case IrValueKind::Unknown:

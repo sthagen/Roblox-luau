@@ -128,6 +128,7 @@ inline bool isNonTerminatingJump(IrCmd cmd)
     case IrCmd::CHECK_ARRAY_SIZE:
     case IrCmd::CHECK_SLOT_MATCH:
     case IrCmd::CHECK_NODE_NO_NEXT:
+    case IrCmd::CHECK_NODE_VALUE:
         return true;
     default:
         break;
@@ -145,7 +146,6 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::LOAD_DOUBLE:
     case IrCmd::LOAD_INT:
     case IrCmd::LOAD_TVALUE:
-    case IrCmd::LOAD_NODE_VALUE_TV:
     case IrCmd::LOAD_ENV:
     case IrCmd::GET_ARR_ADDR:
     case IrCmd::GET_SLOT_NODE_ADDR:
@@ -157,6 +157,7 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::SUB_NUM:
     case IrCmd::MUL_NUM:
     case IrCmd::DIV_NUM:
+    case IrCmd::IDIV_NUM:
     case IrCmd::MOD_NUM:
     case IrCmd::MIN_NUM:
     case IrCmd::MAX_NUM:
@@ -169,6 +170,7 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::NOT_ANY:
     case IrCmd::CMP_ANY:
     case IrCmd::TABLE_LEN:
+    case IrCmd::TABLE_SETNUM:
     case IrCmd::STRING_LEN:
     case IrCmd::NEW_TABLE:
     case IrCmd::DUP_TABLE:

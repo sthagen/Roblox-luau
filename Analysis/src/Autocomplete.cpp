@@ -13,10 +13,10 @@
 #include <utility>
 
 LUAU_FASTFLAG(DebugLuauReadWriteProperties)
-LUAU_FASTFLAGVARIABLE(LuauDisableCompletionOutsideQuotes, false)
 LUAU_FASTFLAGVARIABLE(LuauAnonymousAutofilled1, false);
 LUAU_FASTFLAGVARIABLE(LuauAutocompleteLastTypecheck, false)
-LUAU_FASTFLAGVARIABLE(LuauAutocompleteHideSelfArg, false)
+LUAU_FASTFLAGVARIABLE(LuauAutocompleteDoEnd, false)
+LUAU_FASTFLAGVARIABLE(LuauAutocompleteStringLiteralBounds, false);
 
 static const std::unordered_set<std::string> kStatementStartingKeywords = {
     "while", "if", "local", "repeat", "function", "do", "for", "return", "break", "continue", "type", "export"};
@@ -284,38 +284,20 @@ static void autocompleteProps(const Module& module, TypeArena* typeArena, NotNul
                 ParenthesesRecommendation parens =
                     indexType == PropIndexType::Key ? ParenthesesRecommendation::None : getParenRecommendation(type, nodes, typeCorrect);
 
-                if (FFlag::LuauAutocompleteHideSelfArg)
-                {
-                    result[name] = AutocompleteEntry{
-                        AutocompleteEntryKind::Property,
-                        type,
-                        prop.deprecated,
-                        isWrongIndexer(type),
-                        typeCorrect,
-                        containingClass,
-                        &prop,
-                        prop.documentationSymbol,
-                        {},
-                        parens,
-                        {},
-                        indexType == PropIndexType::Colon
-                    };
-                }
-                else
-                {
-                    result[name] = AutocompleteEntry{
-                        AutocompleteEntryKind::Property,
-                        type,
-                        prop.deprecated,
-                        isWrongIndexer(type),
-                        typeCorrect,
-                        containingClass,
-                        &prop,
-                        prop.documentationSymbol,
-                        {},
-                        parens
-                    };
-                }
+                result[name] = AutocompleteEntry{
+                    AutocompleteEntryKind::Property,
+                    type,
+                    prop.deprecated,
+                    isWrongIndexer(type),
+                    typeCorrect,
+                    containingClass,
+                    &prop,
+                    prop.documentationSymbol,
+                    {},
+                    parens,
+                    {},
+                    indexType == PropIndexType::Colon
+                };
             }
         }
     };
@@ -485,8 +467,19 @@ AutocompleteEntryMap autocompleteModuleTypes(const Module& module, Position posi
     return result;
 }
 
-static void autocompleteStringSingleton(TypeId ty, bool addQuotes, AutocompleteEntryMap& result)
+static void autocompleteStringSingleton(TypeId ty, bool addQuotes, AstNode* node, Position position, AutocompleteEntryMap& result)
 {
+    if (FFlag::LuauAutocompleteStringLiteralBounds)
+    {
+        if (position == node->location.begin || position == node->location.end)
+        {
+            if (auto str = node->as<AstExprConstantString>(); str && str->quoteStyle == AstExprConstantString::Quoted)
+                return;
+            else if (node->is<AstExprInterpString>())
+                return;
+        }
+    }
+
     auto formatKey = [addQuotes](const std::string& key) {
         if (addQuotes)
             return "\"" + escape(key) + "\"";
@@ -1097,14 +1090,19 @@ static AutocompleteEntryMap autocompleteStatement(
     {
         if (AstStatForIn* statForIn = (*it)->as<AstStatForIn>(); statForIn && !statForIn->hasEnd)
             result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-        if (AstStatFor* statFor = (*it)->as<AstStatFor>(); statFor && !statFor->hasEnd)
+        else if (AstStatFor* statFor = (*it)->as<AstStatFor>(); statFor && !statFor->hasEnd)
             result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-        if (AstStatIf* statIf = (*it)->as<AstStatIf>(); statIf && !statIf->hasEnd)
+        else if (AstStatIf* statIf = (*it)->as<AstStatIf>(); statIf && !statIf->hasEnd)
             result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-        if (AstStatWhile* statWhile = (*it)->as<AstStatWhile>(); statWhile && !statWhile->hasEnd)
+        else if (AstStatWhile* statWhile = (*it)->as<AstStatWhile>(); statWhile && !statWhile->hasEnd)
             result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
-        if (AstExprFunction* exprFunction = (*it)->as<AstExprFunction>(); exprFunction && !exprFunction->hasEnd)
+        else if (AstExprFunction* exprFunction = (*it)->as<AstExprFunction>(); exprFunction && !exprFunction->hasEnd)
             result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
+        if (FFlag::LuauAutocompleteDoEnd)
+        {
+            if (AstStatBlock* exprBlock = (*it)->as<AstStatBlock>(); exprBlock && !exprBlock->hasEnd)
+                result.emplace("end", AutocompleteEntry{AutocompleteEntryKind::Keyword});
+        }
     }
 
     if (ancestry.size() >= 2)
@@ -1239,7 +1237,7 @@ static AutocompleteContext autocompleteExpression(const SourceModule& sourceModu
         result["function"] = {AutocompleteEntryKind::Keyword, std::nullopt, false, false, correctForFunction};
 
         if (auto ty = findExpectedTypeAt(module, node, position))
-            autocompleteStringSingleton(*ty, true, result);
+            autocompleteStringSingleton(*ty, true, node, position, result);
     }
 
     return AutocompleteContext::Expression;
@@ -1345,7 +1343,7 @@ static std::optional<AutocompleteEntryMap> autocompleteStringParams(const Source
         return std::nullopt;
     }
 
-    if (FFlag::LuauDisableCompletionOutsideQuotes && !nodes.back()->is<AstExprError>())
+    if (!nodes.back()->is<AstExprError>())
     {
         if (nodes.back()->location.end == position || nodes.back()->location.begin == position)
         {
@@ -1720,7 +1718,7 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
                     auto result = autocompleteProps(*module, typeArena, builtinTypes, *it, PropIndexType::Key, ancestry);
 
                     if (auto nodeIt = module->astExpectedTypes.find(node->asExpr()))
-                        autocompleteStringSingleton(*nodeIt, !node->is<AstExprConstantString>(), result);
+                        autocompleteStringSingleton(*nodeIt, !node->is<AstExprConstantString>(), node, position, result);
 
                     if (!key)
                     {
@@ -1732,7 +1730,7 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
                         // suggest those too.
                         if (auto ttv = get<TableType>(follow(*it)); ttv && ttv->indexer)
                         {
-                            autocompleteStringSingleton(ttv->indexer->indexType, false, result);
+                            autocompleteStringSingleton(ttv->indexer->indexType, false, node, position, result);
                         }
                     }
 
@@ -1769,7 +1767,7 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
         AutocompleteEntryMap result;
 
         if (auto it = module->astExpectedTypes.find(node->asExpr()))
-            autocompleteStringSingleton(*it, false, result);
+            autocompleteStringSingleton(*it, false, node, position, result);
 
         if (ancestry.size() >= 2)
         {
@@ -1783,7 +1781,7 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
                 if (binExpr->op == AstExprBinary::CompareEq || binExpr->op == AstExprBinary::CompareNe)
                 {
                     if (auto it = module->astTypes.find(node == binExpr->left ? binExpr->right : binExpr->left))
-                        autocompleteStringSingleton(*it, false, result);
+                        autocompleteStringSingleton(*it, false, node, position, result);
                 }
             }
         }

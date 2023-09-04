@@ -1,6 +1,8 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/IrBuilder.h"
 
+#include "Luau/Bytecode.h"
+#include "Luau/BytecodeUtils.h"
 #include "Luau/IrData.h"
 #include "Luau/IrUtils.h"
 
@@ -331,6 +333,9 @@ void IrBuilder::translateInst(LuauOpcode op, const Instruction* pc, int i)
     case LOP_DIV:
         translateInstBinary(*this, pc, i, TM_DIV);
         break;
+    case LOP_IDIV:
+        translateInstBinary(*this, pc, i, TM_IDIV);
+        break;
     case LOP_MOD:
         translateInstBinary(*this, pc, i, TM_MOD);
         break;
@@ -348,6 +353,9 @@ void IrBuilder::translateInst(LuauOpcode op, const Instruction* pc, int i)
         break;
     case LOP_DIVK:
         translateInstBinaryK(*this, pc, i, TM_DIV);
+        break;
+    case LOP_IDIVK:
+        translateInstBinaryK(*this, pc, i, TM_IDIV);
         break;
     case LOP_MODK:
         translateInstBinaryK(*this, pc, i, TM_MOD);
@@ -371,7 +379,7 @@ void IrBuilder::translateInst(LuauOpcode op, const Instruction* pc, int i)
         translateInstDupTable(*this, pc, i);
         break;
     case LOP_SETLIST:
-        inst(IrCmd::SETLIST, constUint(i), vmReg(LUAU_INSN_A(*pc)), vmReg(LUAU_INSN_B(*pc)), constInt(LUAU_INSN_C(*pc) - 1), constUint(pc[1]));
+        inst(IrCmd::SETLIST, constUint(i), vmReg(LUAU_INSN_A(*pc)), vmReg(LUAU_INSN_B(*pc)), constInt(LUAU_INSN_C(*pc) - 1), constUint(pc[1]), undef());
         break;
     case LOP_GETUPVAL:
         translateInstGetUpval(*this, pc, i);

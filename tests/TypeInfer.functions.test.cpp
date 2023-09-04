@@ -1095,9 +1095,6 @@ TEST_CASE_FIXTURE(Fixture, "return_type_by_overload")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "infer_anonymous_function_arguments")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
-
     // Simple direct arg to arg propagation
     CheckResult result = check(R"(
 type Table = { x: number, y: number }
@@ -1212,6 +1209,71 @@ f(function(x) return x * 2 end)
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "infer_generic_function_function_argument")
+{
+    CheckResult result = check(R"(
+local function sum<a>(x: a, y: a, f: (a, a) -> a) return f(x, y) end
+return sum(2, 3, function(a, b) return a + b end)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    result = check(R"(
+local function map<a, b>(arr: {a}, f: (a) -> b) local r = {} for i,v in ipairs(arr) do table.insert(r, f(v)) end return r end
+local a = {1, 2, 3}
+local r = map(a, function(a) return a + a > 100 end)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    REQUIRE_EQ("{boolean}", toString(requireType("r")));
+
+    check(R"(
+local function foldl<a, b>(arr: {a}, init: b, f: (b, a) -> b) local r = init for i,v in ipairs(arr) do r = f(r, v) end return r end
+local a = {1, 2, 3}
+local r = foldl(a, {s=0,c=0}, function(a, b) return {s = a.s + b, c = a.c + 1} end)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    REQUIRE_EQ("{ c: number, s: number }", toString(requireType("r")));
+}
+
+TEST_CASE_FIXTURE(Fixture, "infer_generic_function_function_argument_overloaded")
+{
+    CheckResult result = check(R"(
+local function g1<T>(a: T, f: (T) -> T) return f(a) end
+local function g2<T>(a: T, b: T, f: (T, T) -> T) return f(a, b) end
+
+local g12: typeof(g1) & typeof(g2)
+
+g12(1, function(x) return x + x end)
+g12(1, 2, function(x, y) return x + y end)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    result = check(R"(
+local function g1<T>(a: T, f: (T) -> T) return f(a) end
+local function g2<T>(a: T, b: T, f: (T, T) -> T) return f(a, b) end
+
+local g12: typeof(g1) & typeof(g2)
+
+g12({x=1}, function(x) return {x=-x.x} end)
+g12({x=1}, {x=2}, function(x, y) return {x=x.x + y.x} end)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "infer_generic_lib_function_function_argument")
+{
+    CheckResult result = check(R"(
+local a = {{x=4}, {x=7}, {x=1}}
+table.sort(a, function(x, y) return x.x < y.x end)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
 TEST_CASE_FIXTURE(Fixture, "variadic_any_is_compatible_with_a_generic_TypePack")
 {
     CheckResult result = check(R"(
@@ -1277,8 +1339,6 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_function_mismatch_arg_count")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
     CheckResult result = check(R"(
 type A = (number, number) -> string
 type B = (number) -> string
@@ -1299,9 +1359,6 @@ caused by:
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_function_mismatch_arg")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
-
     CheckResult result = check(R"(
 type A = (number, number) -> string
 type B = (number, string) -> string
@@ -1323,9 +1380,6 @@ Type 'string' could not be converted into 'number')";
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_function_mismatch_ret_count")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
-
     CheckResult result = check(R"(
 type A = (number, number) -> (number)
 type B = (number, number) -> (number, boolean)
@@ -1346,9 +1400,6 @@ caused by:
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_function_mismatch_ret")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
-
     CheckResult result = check(R"(
 type A = (number, number) -> string
 type B = (number, number) -> number
@@ -1370,9 +1421,6 @@ Type 'string' could not be converted into 'number')";
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_function_mismatch_ret_mult")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
-
     CheckResult result = check(R"(
 type A = (number, number) -> (number, string)
 type B = (number, number) -> (number, boolean)
@@ -1498,9 +1546,6 @@ TEST_CASE_FIXTURE(Fixture, "inferred_higher_order_functions_are_quantified_at_th
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "function_decl_non_self_unsealed_overwrite")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
-
     CheckResult result = check(R"(
 local t = { f = nil :: ((x: number) -> number)? }
 
@@ -1543,9 +1588,6 @@ TEST_CASE_FIXTURE(Fixture, "strict_mode_ok_with_missing_arguments")
 
 TEST_CASE_FIXTURE(Fixture, "function_statement_sealed_table_assignment_through_indexer")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
-
     CheckResult result = check(R"(
 local t: {[string]: () -> number} = {}
 
@@ -1754,9 +1796,6 @@ foo(string.find("hello", "e"))
 
 TEST_CASE_FIXTURE(Fixture, "luau_subtyping_is_np_hard")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
-
     CheckResult result = check(R"(
 --!strict
 
@@ -1952,10 +1991,8 @@ TEST_CASE_FIXTURE(Fixture, "function_exprs_are_generalized_at_signature_scope_no
 TEST_CASE_FIXTURE(BuiltinsFixture, "param_1_and_2_both_takes_the_same_generic_but_their_arguments_are_incompatible")
 {
     ScopedFastFlag sff[] = {
-        {"LuauIndentTypeMismatch", true},
         {"LuauAlwaysCommitInferencesOfFunctionCalls", true},
     };
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
 
     CheckResult result = check(R"(
         local function foo<a>(x: a, y: a?)

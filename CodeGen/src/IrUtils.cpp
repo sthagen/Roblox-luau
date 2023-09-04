@@ -32,7 +32,6 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::LOAD_INT:
         return IrValueKind::Int;
     case IrCmd::LOAD_TVALUE:
-    case IrCmd::LOAD_NODE_VALUE_TV:
         return IrValueKind::Tvalue;
     case IrCmd::LOAD_ENV:
     case IrCmd::GET_ARR_ADDR:
@@ -46,7 +45,7 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::STORE_INT:
     case IrCmd::STORE_VECTOR:
     case IrCmd::STORE_TVALUE:
-    case IrCmd::STORE_NODE_VALUE_TV:
+    case IrCmd::STORE_SPLIT_TVALUE:
         return IrValueKind::None;
     case IrCmd::ADD_INT:
     case IrCmd::SUB_INT:
@@ -55,6 +54,7 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::SUB_NUM:
     case IrCmd::MUL_NUM:
     case IrCmd::DIV_NUM:
+    case IrCmd::IDIV_NUM:
     case IrCmd::MOD_NUM:
     case IrCmd::MIN_NUM:
     case IrCmd::MAX_NUM:
@@ -80,7 +80,9 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::JUMP_SLOT_MATCH:
         return IrValueKind::None;
     case IrCmd::TABLE_LEN:
-        return IrValueKind::Double;
+        return IrValueKind::Int;
+    case IrCmd::TABLE_SETNUM:
+        return IrValueKind::Pointer;
     case IrCmd::STRING_LEN:
         return IrValueKind::Int;
     case IrCmd::NEW_TABLE:
@@ -112,7 +114,6 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::CONCAT:
     case IrCmd::GET_UPVALUE:
     case IrCmd::SET_UPVALUE:
-    case IrCmd::PREPARE_FORN:
     case IrCmd::CHECK_TAG:
     case IrCmd::CHECK_TRUTHY:
     case IrCmd::CHECK_READONLY:
@@ -121,6 +122,7 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::CHECK_ARRAY_SIZE:
     case IrCmd::CHECK_SLOT_MATCH:
     case IrCmd::CHECK_NODE_NO_NEXT:
+    case IrCmd::CHECK_NODE_VALUE:
     case IrCmd::INTERRUPT:
     case IrCmd::CHECK_GC:
     case IrCmd::BARRIER_OBJ:
@@ -216,6 +218,8 @@ void removeUse(IrFunction& function, IrOp op)
 
 bool isGCO(uint8_t tag)
 {
+    LUAU_ASSERT(tag < LUA_T_COUNT);
+
     // mirrors iscollectable(o) from VM/lobject.h
     return tag >= LUA_TSTRING;
 }
@@ -388,6 +392,7 @@ void applySubstitutions(IrFunction& function, IrInst& inst)
 
 bool compare(double a, double b, IrCondition cond)
 {
+    // Note: redundant bool() casts work around invalid MSVC optimization that merges cases in this switch, violating IEEE754 comparison semantics
     switch (cond)
     {
     case IrCondition::Equal:
@@ -397,19 +402,19 @@ bool compare(double a, double b, IrCondition cond)
     case IrCondition::Less:
         return a < b;
     case IrCondition::NotLess:
-        return !(a < b);
+        return !bool(a < b);
     case IrCondition::LessEqual:
         return a <= b;
     case IrCondition::NotLessEqual:
-        return !(a <= b);
+        return !bool(a <= b);
     case IrCondition::Greater:
         return a > b;
     case IrCondition::NotGreater:
-        return !(a > b);
+        return !bool(a > b);
     case IrCondition::GreaterEqual:
         return a >= b;
     case IrCondition::NotGreaterEqual:
-        return !(a >= b);
+        return !bool(a >= b);
     default:
         LUAU_ASSERT(!"Unsupported condition");
     }
@@ -462,6 +467,10 @@ void foldConstants(IrBuilder& build, IrFunction& function, IrBlock& block, uint3
     case IrCmd::DIV_NUM:
         if (inst.a.kind == IrOpKind::Constant && inst.b.kind == IrOpKind::Constant)
             substitute(function, inst, build.constDouble(function.doubleOp(inst.a) / function.doubleOp(inst.b)));
+        break;
+    case IrCmd::IDIV_NUM:
+        if (inst.a.kind == IrOpKind::Constant && inst.b.kind == IrOpKind::Constant)
+            substitute(function, inst, build.constDouble(luai_numidiv(function.doubleOp(inst.a), function.doubleOp(inst.b))));
         break;
     case IrCmd::MOD_NUM:
         if (inst.a.kind == IrOpKind::Constant && inst.b.kind == IrOpKind::Constant)

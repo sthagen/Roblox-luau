@@ -26,9 +26,7 @@ LUAU_FASTINTVARIABLE(LuauCompileInlineThreshold, 25)
 LUAU_FASTINTVARIABLE(LuauCompileInlineThresholdMaxBoost, 300)
 LUAU_FASTINTVARIABLE(LuauCompileInlineDepth, 5)
 
-LUAU_FASTFLAGVARIABLE(LuauCompileFixBuiltinArity, false)
-
-LUAU_FASTFLAGVARIABLE(LuauCompileFoldMathK, false)
+LUAU_FASTFLAG(LuauFloorDivision)
 
 namespace Luau
 {
@@ -793,15 +791,10 @@ struct Compiler
                 return compileExprFastcallN(expr, target, targetCount, targetTop, multRet, regs, bfid);
             else if (options.optimizationLevel >= 2)
             {
-                if (FFlag::LuauCompileFixBuiltinArity)
-                {
-                    // when a builtin is none-safe with matching arity, even if the last expression returns 0 or >1 arguments,
-                    // we can rely on the behavior of the function being the same (none-safe means nil and none are interchangeable)
-                    BuiltinInfo info = getBuiltinInfo(bfid);
-                    if (int(expr->args.size) == info.params && (info.flags & BuiltinInfo::Flag_NoneSafe) != 0)
-                        return compileExprFastcallN(expr, target, targetCount, targetTop, multRet, regs, bfid);
-                }
-                else if (int(expr->args.size) == getBuiltinInfo(bfid).params)
+                // when a builtin is none-safe with matching arity, even if the last expression returns 0 or >1 arguments,
+                // we can rely on the behavior of the function being the same (none-safe means nil and none are interchangeable)
+                BuiltinInfo info = getBuiltinInfo(bfid);
+                if (int(expr->args.size) == info.params && (info.flags & BuiltinInfo::Flag_NoneSafe) != 0)
                     return compileExprFastcallN(expr, target, targetCount, targetTop, multRet, regs, bfid);
             }
         }
@@ -1027,6 +1020,11 @@ struct Compiler
 
         case AstExprBinary::Div:
             return k ? LOP_DIVK : LOP_DIV;
+
+        case AstExprBinary::FloorDiv:
+            LUAU_ASSERT(FFlag::LuauFloorDivision);
+
+            return k ? LOP_IDIVK : LOP_IDIV;
 
         case AstExprBinary::Mod:
             return k ? LOP_MODK : LOP_MOD;
@@ -1478,9 +1476,12 @@ struct Compiler
         case AstExprBinary::Sub:
         case AstExprBinary::Mul:
         case AstExprBinary::Div:
+        case AstExprBinary::FloorDiv:
         case AstExprBinary::Mod:
         case AstExprBinary::Pow:
         {
+            LUAU_ASSERT(FFlag::LuauFloorDivision || expr->op != AstExprBinary::FloorDiv);
+
             int32_t rc = getConstantNumber(expr->right);
 
             if (rc >= 0 && rc <= 255)
@@ -3201,9 +3202,12 @@ struct Compiler
         case AstExprBinary::Sub:
         case AstExprBinary::Mul:
         case AstExprBinary::Div:
+        case AstExprBinary::FloorDiv:
         case AstExprBinary::Mod:
         case AstExprBinary::Pow:
         {
+            LUAU_ASSERT(FFlag::LuauFloorDivision || stat->op != AstExprBinary::FloorDiv);
+
             if (var.kind != LValue::Kind_Local)
                 compileLValueUse(var, target, /* set= */ false);
 
@@ -3878,9 +3882,8 @@ void compileOrThrow(BytecodeBuilder& bytecode, const ParseResult& parseResult, c
     {
         compiler.builtinsFold = &compiler.builtins;
 
-        if (FFlag::LuauCompileFoldMathK)
-            if (AstName math = names.get("math"); math.value && getGlobalState(compiler.globals, math) == Global::Default)
-                compiler.builtinsFoldMathK = true;
+        if (AstName math = names.get("math"); math.value && getGlobalState(compiler.globals, math) == Global::Default)
+            compiler.builtinsFoldMathK = true;
     }
 
     if (options.optimizationLevel >= 1)

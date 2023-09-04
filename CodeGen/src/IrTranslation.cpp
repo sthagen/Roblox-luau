@@ -2,6 +2,7 @@
 #include "IrTranslation.h"
 
 #include "Luau/Bytecode.h"
+#include "Luau/BytecodeUtils.h"
 #include "Luau/IrBuilder.h"
 #include "Luau/IrUtils.h"
 
@@ -381,6 +382,9 @@ static void translateInstBinaryNumeric(IrBuilder& build, int ra, int rb, int rc,
         case TM_DIV:
             result = build.inst(IrCmd::DIV_NUM, vb, vc);
             break;
+        case TM_IDIV:
+            result = build.inst(IrCmd::IDIV_NUM, vb, vc);
+            break;
         case TM_MOD:
             result = build.inst(IrCmd::MOD_NUM, vb, vc);
             break;
@@ -471,8 +475,9 @@ void translateInstLength(IrBuilder& build, const Instruction* pc, int pcpos)
     build.inst(IrCmd::CHECK_NO_METATABLE, vb, fallback);
 
     IrOp va = build.inst(IrCmd::TABLE_LEN, vb);
+    IrOp vai = build.inst(IrCmd::INT_TO_NUM, va);
 
-    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(ra), va);
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(ra), vai);
     build.inst(IrCmd::STORE_TAG, build.vmReg(ra), build.constTag(LUA_TNUMBER));
 
     IrOp next = build.blockAtInst(pcpos + 1);
@@ -526,7 +531,7 @@ void translateInstSetUpval(IrBuilder& build, const Instruction* pc, int pcpos)
     int ra = LUAU_INSN_A(*pc);
     int up = LUAU_INSN_B(*pc);
 
-    build.inst(IrCmd::SET_UPVALUE, build.vmUpvalue(up), build.vmReg(ra));
+    build.inst(IrCmd::SET_UPVALUE, build.vmUpvalue(up), build.vmReg(ra), build.undef());
 }
 
 void translateInstCloseUpvals(IrBuilder& build, const Instruction* pc)
@@ -553,7 +558,7 @@ IrOp translateFastCallN(IrBuilder& build, const Instruction* pc, int pcpos, bool
 
     IrOp builtinArgs = args;
 
-    if (customArgs.kind == IrOpKind::VmConst)
+    if (customArgs.kind == IrOpKind::VmConst && bfid != LBF_TABLE_INSERT)
     {
         TValue protok = build.function.proto->k[customArgs.index];
 
@@ -608,22 +613,19 @@ void translateInstForNPrep(IrBuilder& build, const Instruction* pc, int pcpos)
 
     IrOp loopStart = build.blockAtInst(pcpos + getOpLength(LuauOpcode(LUAU_INSN_OP(*pc))));
     IrOp loopExit = build.blockAtInst(getJumpTarget(*pc, pcpos));
-    IrOp fallback = build.block(IrBlockKind::Fallback);
 
-    IrOp nextStep = build.block(IrBlockKind::Internal);
     IrOp direct = build.block(IrBlockKind::Internal);
     IrOp reverse = build.block(IrBlockKind::Internal);
 
+    // When loop parameters are not numbers, VM tries to perform type coercion from string and raises an exception if that fails
+    // Performing that fallback in native code increases code size and complicates CFG, obscuring the values when they are constant
+    // To avoid that overhead for an extreemely rare case (that doesn't even typecheck), we exit to VM to handle it
     IrOp tagLimit = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 0));
-    build.inst(IrCmd::CHECK_TAG, tagLimit, build.constTag(LUA_TNUMBER), fallback);
+    build.inst(IrCmd::CHECK_TAG, tagLimit, build.constTag(LUA_TNUMBER), build.vmExit(pcpos));
     IrOp tagStep = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 1));
-    build.inst(IrCmd::CHECK_TAG, tagStep, build.constTag(LUA_TNUMBER), fallback);
+    build.inst(IrCmd::CHECK_TAG, tagStep, build.constTag(LUA_TNUMBER), build.vmExit(pcpos));
     IrOp tagIdx = build.inst(IrCmd::LOAD_TAG, build.vmReg(ra + 2));
-    build.inst(IrCmd::CHECK_TAG, tagIdx, build.constTag(LUA_TNUMBER), fallback);
-    build.inst(IrCmd::JUMP, nextStep);
-
-    // After successful conversion of arguments to number in a fallback, we return here
-    build.beginBlock(nextStep);
+    build.inst(IrCmd::CHECK_TAG, tagIdx, build.constTag(LUA_TNUMBER), build.vmExit(pcpos));
 
     IrOp zero = build.constDouble(0.0);
     IrOp limit = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(ra + 0));
@@ -642,12 +644,6 @@ void translateInstForNPrep(IrBuilder& build, const Instruction* pc, int pcpos)
     // step <= 0 is true, check limit <= idx
     build.beginBlock(reverse);
     build.inst(IrCmd::JUMP_CMP_NUM, limit, idx, build.cond(IrCondition::LessEqual), loopStart, loopExit);
-
-    // Fallback will try to convert loop variables to numbers or throw an error
-    build.beginBlock(fallback);
-    build.inst(IrCmd::SET_SAVEDPC, build.constUint(pcpos + 1));
-    build.inst(IrCmd::PREPARE_FORN, build.vmReg(ra + 0), build.vmReg(ra + 1), build.vmReg(ra + 2));
-    build.inst(IrCmd::JUMP, nextStep);
 
     // Fallthrough in original bytecode is implicit, so we start next internal block here
     if (build.isInternalBlock(loopStart))
@@ -984,11 +980,11 @@ void translateInstGetTableKS(IrBuilder& build, const Instruction* pc, int pcpos)
 
     IrOp vb = build.inst(IrCmd::LOAD_POINTER, build.vmReg(rb));
 
-    IrOp addrSlotEl = build.inst(IrCmd::GET_SLOT_NODE_ADDR, vb, build.constUint(pcpos));
+    IrOp addrSlotEl = build.inst(IrCmd::GET_SLOT_NODE_ADDR, vb, build.constUint(pcpos), build.vmConst(aux));
 
     build.inst(IrCmd::CHECK_SLOT_MATCH, addrSlotEl, build.vmConst(aux), fallback);
 
-    IrOp tvn = build.inst(IrCmd::LOAD_NODE_VALUE_TV, addrSlotEl);
+    IrOp tvn = build.inst(IrCmd::LOAD_TVALUE, addrSlotEl, build.constInt(offsetof(LuaNode, val)));
     build.inst(IrCmd::STORE_TVALUE, build.vmReg(ra), tvn);
 
     IrOp next = build.blockAtInst(pcpos + 2);
@@ -1011,13 +1007,13 @@ void translateInstSetTableKS(IrBuilder& build, const Instruction* pc, int pcpos)
 
     IrOp vb = build.inst(IrCmd::LOAD_POINTER, build.vmReg(rb));
 
-    IrOp addrSlotEl = build.inst(IrCmd::GET_SLOT_NODE_ADDR, vb, build.constUint(pcpos));
+    IrOp addrSlotEl = build.inst(IrCmd::GET_SLOT_NODE_ADDR, vb, build.constUint(pcpos), build.vmConst(aux));
 
     build.inst(IrCmd::CHECK_SLOT_MATCH, addrSlotEl, build.vmConst(aux), fallback);
     build.inst(IrCmd::CHECK_READONLY, vb, fallback);
 
     IrOp tva = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(ra));
-    build.inst(IrCmd::STORE_NODE_VALUE_TV, addrSlotEl, tva);
+    build.inst(IrCmd::STORE_TVALUE, addrSlotEl, tva, build.constInt(offsetof(LuaNode, val)));
 
     build.inst(IrCmd::BARRIER_TABLE_FORWARD, vb, build.vmReg(ra), build.undef());
 
@@ -1036,11 +1032,11 @@ void translateInstGetGlobal(IrBuilder& build, const Instruction* pc, int pcpos)
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
     IrOp env = build.inst(IrCmd::LOAD_ENV);
-    IrOp addrSlotEl = build.inst(IrCmd::GET_SLOT_NODE_ADDR, env, build.constUint(pcpos));
+    IrOp addrSlotEl = build.inst(IrCmd::GET_SLOT_NODE_ADDR, env, build.constUint(pcpos), build.vmConst(aux));
 
     build.inst(IrCmd::CHECK_SLOT_MATCH, addrSlotEl, build.vmConst(aux), fallback);
 
-    IrOp tvn = build.inst(IrCmd::LOAD_NODE_VALUE_TV, addrSlotEl);
+    IrOp tvn = build.inst(IrCmd::LOAD_TVALUE, addrSlotEl, build.constInt(offsetof(LuaNode, val)));
     build.inst(IrCmd::STORE_TVALUE, build.vmReg(ra), tvn);
 
     IrOp next = build.blockAtInst(pcpos + 2);
@@ -1058,13 +1054,13 @@ void translateInstSetGlobal(IrBuilder& build, const Instruction* pc, int pcpos)
     IrOp fallback = build.block(IrBlockKind::Fallback);
 
     IrOp env = build.inst(IrCmd::LOAD_ENV);
-    IrOp addrSlotEl = build.inst(IrCmd::GET_SLOT_NODE_ADDR, env, build.constUint(pcpos));
+    IrOp addrSlotEl = build.inst(IrCmd::GET_SLOT_NODE_ADDR, env, build.constUint(pcpos), build.vmConst(aux));
 
     build.inst(IrCmd::CHECK_SLOT_MATCH, addrSlotEl, build.vmConst(aux), fallback);
     build.inst(IrCmd::CHECK_READONLY, env, fallback);
 
     IrOp tva = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(ra));
-    build.inst(IrCmd::STORE_NODE_VALUE_TV, addrSlotEl, tva);
+    build.inst(IrCmd::STORE_TVALUE, addrSlotEl, tva, build.constInt(offsetof(LuaNode, val)));
 
     build.inst(IrCmd::BARRIER_TABLE_FORWARD, env, build.vmReg(ra), build.undef());
 
@@ -1136,7 +1132,7 @@ void translateInstNamecall(IrBuilder& build, const Instruction* pc, int pcpos)
     build.inst(IrCmd::STORE_POINTER, build.vmReg(ra + 1), table);
     build.inst(IrCmd::STORE_TAG, build.vmReg(ra + 1), build.constTag(LUA_TTABLE));
 
-    IrOp nodeEl = build.inst(IrCmd::LOAD_NODE_VALUE_TV, addrNodeEl);
+    IrOp nodeEl = build.inst(IrCmd::LOAD_TVALUE, addrNodeEl, build.constInt(offsetof(LuaNode, val)));
     build.inst(IrCmd::STORE_TVALUE, build.vmReg(ra), nodeEl);
     build.inst(IrCmd::JUMP, next);
 
@@ -1149,7 +1145,7 @@ void translateInstNamecall(IrBuilder& build, const Instruction* pc, int pcpos)
     build.loadAndCheckTag(indexPtr, LUA_TTABLE, fallback);
     IrOp index = build.inst(IrCmd::LOAD_POINTER, indexPtr);
 
-    IrOp addrIndexNodeEl = build.inst(IrCmd::GET_SLOT_NODE_ADDR, index, build.constUint(pcpos));
+    IrOp addrIndexNodeEl = build.inst(IrCmd::GET_SLOT_NODE_ADDR, index, build.constUint(pcpos), build.vmConst(aux));
     build.inst(IrCmd::CHECK_SLOT_MATCH, addrIndexNodeEl, build.vmConst(aux), fallback);
 
     // TODO: original 'table' was clobbered by a call inside 'FASTGETTM'
@@ -1158,7 +1154,7 @@ void translateInstNamecall(IrBuilder& build, const Instruction* pc, int pcpos)
     build.inst(IrCmd::STORE_POINTER, build.vmReg(ra + 1), table2);
     build.inst(IrCmd::STORE_TAG, build.vmReg(ra + 1), build.constTag(LUA_TTABLE));
 
-    IrOp indexNodeEl = build.inst(IrCmd::LOAD_NODE_VALUE_TV, addrIndexNodeEl);
+    IrOp indexNodeEl = build.inst(IrCmd::LOAD_TVALUE, addrIndexNodeEl, build.constInt(offsetof(LuaNode, val)));
     build.inst(IrCmd::STORE_TVALUE, build.vmReg(ra), indexNodeEl);
     build.inst(IrCmd::JUMP, next);
 

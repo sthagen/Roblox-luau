@@ -44,7 +44,6 @@ void initFunctions(NativeState& data)
     data.context.luaV_equalval = luaV_equalval;
     data.context.luaV_doarith = luaV_doarith;
     data.context.luaV_dolen = luaV_dolen;
-    data.context.luaV_prepareFORN = luaV_prepareFORN;
     data.context.luaV_gettable = luaV_gettable;
     data.context.luaV_settable = luaV_settable;
     data.context.luaV_getimport = luaV_getimport;
@@ -54,6 +53,7 @@ void initFunctions(NativeState& data)
     data.context.luaH_new = luaH_new;
     data.context.luaH_clone = luaH_clone;
     data.context.luaH_resizearray = luaH_resizearray;
+    data.context.luaH_setnum = luaH_setnum;
 
     data.context.luaC_barriertable = luaC_barriertable;
     data.context.luaC_barrierf = luaC_barrierf;
