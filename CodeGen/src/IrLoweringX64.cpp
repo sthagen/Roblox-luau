@@ -22,11 +22,12 @@ namespace CodeGen
 namespace X64
 {
 
-IrLoweringX64::IrLoweringX64(AssemblyBuilderX64& build, ModuleHelpers& helpers, IrFunction& function)
+IrLoweringX64::IrLoweringX64(AssemblyBuilderX64& build, ModuleHelpers& helpers, IrFunction& function, LoweringStats* stats)
     : build(build)
     , helpers(helpers)
     , function(function)
-    , regs(build, function)
+    , stats(stats)
+    , regs(build, function, stats)
     , valueTracker(function)
     , exitHandlerMap(~0u)
 {
@@ -655,42 +656,36 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         }
         break;
     }
-    case IrCmd::JUMP_EQ_INT:
-        if (intOp(inst.b) == 0)
+    case IrCmd::JUMP_CMP_INT:
+    {
+        IrCondition cond = conditionOp(inst.c);
+
+        if ((cond == IrCondition::Equal || cond == IrCondition::NotEqual) && intOp(inst.b) == 0)
         {
+            bool invert = cond == IrCondition::NotEqual;
+
             build.test(regOp(inst.a), regOp(inst.a));
 
-            if (isFallthroughBlock(blockOp(inst.c), next))
+            if (isFallthroughBlock(blockOp(inst.d), next))
             {
-                build.jcc(ConditionX64::NotZero, labelOp(inst.d));
-                jumpOrFallthrough(blockOp(inst.c), next);
+                build.jcc(invert ? ConditionX64::Zero : ConditionX64::NotZero, labelOp(inst.e));
+                jumpOrFallthrough(blockOp(inst.d), next);
             }
             else
             {
-                build.jcc(ConditionX64::Zero, labelOp(inst.c));
-                jumpOrFallthrough(blockOp(inst.d), next);
+                build.jcc(invert ? ConditionX64::NotZero : ConditionX64::Zero, labelOp(inst.d));
+                jumpOrFallthrough(blockOp(inst.e), next);
             }
         }
         else
         {
             build.cmp(regOp(inst.a), intOp(inst.b));
 
-            build.jcc(ConditionX64::Equal, labelOp(inst.c));
-            jumpOrFallthrough(blockOp(inst.d), next);
+            build.jcc(getConditionInt(cond), labelOp(inst.d));
+            jumpOrFallthrough(blockOp(inst.e), next);
         }
         break;
-    case IrCmd::JUMP_LT_INT:
-        build.cmp(regOp(inst.a), intOp(inst.b));
-
-        build.jcc(ConditionX64::Less, labelOp(inst.c));
-        jumpOrFallthrough(blockOp(inst.d), next);
-        break;
-    case IrCmd::JUMP_GE_UINT:
-        build.cmp(regOp(inst.a), unsigned(intOp(inst.b)));
-
-        build.jcc(ConditionX64::AboveEqual, labelOp(inst.c));
-        jumpOrFallthrough(blockOp(inst.d), next);
-        break;
+    }
     case IrCmd::JUMP_EQ_POINTER:
         build.cmp(regOp(inst.a), regOp(inst.b));
 
@@ -703,7 +698,6 @@ void IrLoweringX64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
 
         ScopedRegX64 tmp{regs, SizeX64::xmmword};
 
-        // TODO: jumpOnNumberCmp should work on IrCondition directly
         jumpOnNumberCmp(build, tmp.reg, memRegDoubleOp(inst.a), memRegDoubleOp(inst.b), cond, labelOp(inst.d));
         jumpOrFallthrough(blockOp(inst.e), next);
         break;
@@ -1652,6 +1646,15 @@ void IrLoweringX64::finishFunction()
 
         build.mov(edx, handler.pcpos * sizeof(Instruction));
         build.jmp(helpers.updatePcAndContinueInVm);
+    }
+
+    if (stats)
+    {
+        if (regs.maxUsedSlot > kSpillSlots)
+            stats->regAllocErrors++;
+
+        if (regs.maxUsedSlot > stats->maxSpillSlotsUsed)
+            stats->maxSpillSlotsUsed = regs.maxUsedSlot;
     }
 }
 
