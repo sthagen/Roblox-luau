@@ -26,12 +26,11 @@
 LUAU_FASTINT(LuauTypeInferIterationLimit)
 LUAU_FASTINT(LuauTypeInferRecursionLimit)
 LUAU_FASTFLAGVARIABLE(DebugLuauMagicVariableNames)
-LUAU_FASTFLAGVARIABLE(LuauAutocompleteStringSingletonIntersection)
 LUAU_FASTFLAGVARIABLE(LuauAutocompleteConst)
 LUAU_FASTFLAGVARIABLE(LuauAutocompleteExport)
-LUAU_FASTFLAGVARIABLE(LuauAutocompleteMetatableInheritance)
 LUAU_FASTFLAG(LuauExportValueSyntax)
 LUAU_FASTFLAGVARIABLE(LuauAutocompleteFunctionArglistSuggestion)
+LUAU_FASTFLAGVARIABLE(LuauAutocompleteMetatableInheritance)
 
 static constexpr std::array<std::string_view, 12> kStatementStartingKeywords_DEPRECATED =
     {"while", "if", "local", "repeat", "function", "do", "for", "return", "break", "continue", "type", "export"};
@@ -652,7 +651,7 @@ static void autocompleteStringSingleton(TypeId ty, bool addQuotes, AstNode* node
             }
         }
     }
-    else if (auto ity = get<IntersectionType>(ty); FFlag::LuauAutocompleteStringSingletonIntersection && ity)
+    else if (auto ity = get<IntersectionType>(ty))
     {
         for (auto el : ity->parts)
             autocompleteStringSingleton(el, addQuotes, node, position, result);

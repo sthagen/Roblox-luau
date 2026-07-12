@@ -696,7 +696,7 @@ class AstExprInstantiate : public AstExpr
 public:
     LUAU_RTTI(AstExprInstantiate)
 
-    AstExprInstantiate(const Location& location, AstExpr* expr, AstArray<AstTypeOrPack> typePack);
+    AstExprInstantiate(const Location& location, AstExpr* expr, AstArray<AstTypeOrPack> types);
 
     void visit(AstVisitor* visitor) override;
 
@@ -1195,7 +1195,8 @@ public:
         std::optional<Location> prefixLocation,
         const Location& nameLocation,
         bool hasParameterList = false,
-        const AstArray<AstTypeOrPack>& parameters = {}
+        const AstArray<AstTypeOrPack>& parameters = {},
+        AstLocal* prefixLocal = nullptr
     );
 
     void visit(AstVisitor* visitor) override;
@@ -1203,6 +1204,7 @@ public:
     bool hasParameterList;
     std::optional<AstName> prefix;
     std::optional<Location> prefixLocation;
+    AstLocal* prefixLocal = nullptr;
     AstName name;
     Location nameLocation;
     AstArray<AstTypeOrPack> parameters;

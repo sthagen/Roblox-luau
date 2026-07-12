@@ -48,11 +48,13 @@ target_sources(Luau.Bytecode PRIVATE
     Bytecode/include/Luau/BytecodeCallInliner.h
     Bytecode/include/Luau/BytecodeGraph.h
     Bytecode/include/Luau/BytecodeOps.h
+    Bytecode/include/Luau/Sccp.h
 
     Bytecode/src/BytecodeBuilder.cpp
     Bytecode/src/BytecodeGraph.cpp
     Bytecode/src/BytecodeGraphParser.h
     Bytecode/src/BytecodeGraphSerializer.h
+    Bytecode/src/Sccp.cpp
 )
 
 # Luau.Inliner Sources
@@ -122,6 +124,7 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/include/Luau/IrUtils.h
     CodeGen/include/Luau/IrVisitUseDef.h
     CodeGen/include/Luau/Label.h
+    CodeGen/include/Luau/LogBuilder.h
     CodeGen/include/Luau/LoweringStats.h
     CodeGen/include/Luau/NativeProtoExecData.h
     CodeGen/include/Luau/OperandX64.h
@@ -217,6 +220,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/ControlFlow.h
     Analysis/include/Luau/ControlFlowGraph.h
     Analysis/include/Luau/DumpCFG.h
+    Analysis/include/Luau/TypeStateMap.h
     Analysis/include/Luau/DataFlowGraph.h
     Analysis/include/Luau/DcrLogger.h
     Analysis/include/Luau/Def.h
@@ -306,6 +310,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/src/ConstraintSolver.cpp
     Analysis/src/ControlFlowGraph.cpp
     Analysis/src/DumpCFG.cpp
+    Analysis/src/TypeStateMap.cpp
     Analysis/src/DataFlowGraph.cpp
     Analysis/src/DcrLogger.cpp
     Analysis/src/Def.cpp
