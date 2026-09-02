@@ -14,7 +14,6 @@
 #include "Luau/TypeUtils.h"
 #include "Luau/Unifier2.h"
 
-LUAU_FASTFLAGVARIABLE(LuauBidirectionalInferenceVariadics)
 LUAU_FASTFLAGVARIABLE(LuauBidirectionalInferenceBetterLambdaHandling)
 LUAU_FASTFLAG(LuauBidirectionalInferenceSimplifyTables)
 LUAU_FASTFLAG(LuauRelaxConstraintOrderingForFunctionCheck)
@@ -118,25 +117,25 @@ bool isCheckableExpr(const AstExpr* expr)
 struct BidirectionalTypePusher
 {
 
-    NotNull<DenseHashMap<const AstExpr*, TypeId>> astTypes;
-    NotNull<DenseHashMap<const AstExpr*, TypeId>> astExpectedTypes;
+    NotNull<DenseHashMap2<const AstExpr*, TypeId>> astTypes;
+    NotNull<DenseHashMap2<const AstExpr*, TypeId>> astExpectedTypes;
 
     NotNull<ConstraintSolver> solver;
     NotNull<const Constraint> constraint;
-    NotNull<DenseHashSet<const void*>> genericTypesAndPacks;
+    NotNull<DenseHashSet2<const void*>> genericTypesAndPacks;
     NotNull<Unifier2> unifier;
     NotNull<Subtyping> subtyping;
 
     std::vector<IncompleteInference> incompleteInferences;
 
-    DenseHashSet<std::pair<TypeId, const AstExpr*>, PairHash<TypeId, const AstExpr*>> seen{{nullptr, nullptr}};
+    DenseHashSet2<std::pair<TypeId, const AstExpr*>, PairHash<TypeId, const AstExpr*>> seen;
 
     BidirectionalTypePusher(
-        NotNull<DenseHashMap<const AstExpr*, TypeId>> astTypes,
-        NotNull<DenseHashMap<const AstExpr*, TypeId>> astExpectedTypes,
+        NotNull<DenseHashMap2<const AstExpr*, TypeId>> astTypes,
+        NotNull<DenseHashMap2<const AstExpr*, TypeId>> astExpectedTypes,
         NotNull<ConstraintSolver> solver,
         NotNull<const Constraint> constraint,
-        NotNull<DenseHashSet<const void*>> genericTypesAndPacks,
+        NotNull<DenseHashSet2<const void*>> genericTypesAndPacks,
         NotNull<Unifier2> unifier,
         NotNull<Subtyping> subtyping
     )
@@ -274,35 +273,18 @@ struct BidirectionalTypePusher
 
             if (lambdaTy && expectedLambdaTy)
             {
-                if (FFlag::LuauBidirectionalInferenceVariadics)
+                const auto& [lambdaArgTys, _lambdaTail] = flatten(lambdaTy->argTypes);
+                const auto& [expectedLambdaArgTys, _expectedLambdaTail] =
+                    extendTypePack(*solver->arena, solver->builtinTypes, expectedLambdaTy->argTypes, exprLambda->args.size);
+
+                auto limit = std::min({lambdaArgTys.size(), expectedLambdaArgTys.size(), exprLambda->args.size});
+                for (size_t argIndex = 0; argIndex < limit; argIndex++)
                 {
-                    const auto& [lambdaArgTys, _lambdaTail] = flatten(lambdaTy->argTypes);
-                    const auto& [expectedLambdaArgTys, _expectedLambdaTail] =
-                        extendTypePack(*solver->arena, solver->builtinTypes, expectedLambdaTy->argTypes, exprLambda->args.size);
-
-                    auto limit = std::min({lambdaArgTys.size(), expectedLambdaArgTys.size(), exprLambda->args.size});
-                    for (size_t argIndex = 0; argIndex < limit; argIndex++)
-                    {
-                        if (!exprLambda->args.data[argIndex]->annotation && get<FreeType>(follow(lambdaArgTys[argIndex])) &&
-                            !containsGeneric(expectedLambdaArgTys[argIndex], NotNull{genericTypesAndPacks}))
-                            solver->bind(NotNull{constraint}, lambdaArgTys[argIndex], expectedLambdaArgTys[argIndex]);
-                    }
-
+                    if (!exprLambda->args.data[argIndex]->annotation && get<FreeType>(follow(lambdaArgTys[argIndex])) &&
+                        !containsGeneric(expectedLambdaArgTys[argIndex], NotNull{genericTypesAndPacks}))
+                        solver->bind(NotNull{constraint}, lambdaArgTys[argIndex], expectedLambdaArgTys[argIndex]);
                 }
-                else
-                {
 
-                    const auto& [lambdaArgTys, _lambdaTail] = flatten(lambdaTy->argTypes);
-                    const auto& [expectedLambdaArgTys, _expectedLambdaTail] = flatten(expectedLambdaTy->argTypes);
-
-                    auto limit = std::min({lambdaArgTys.size(), expectedLambdaArgTys.size(), exprLambda->args.size});
-                    for (size_t argIndex = 0; argIndex < limit; argIndex++)
-                    {
-                        if (!exprLambda->args.data[argIndex]->annotation && get<FreeType>(follow(lambdaArgTys[argIndex])) &&
-                            !containsGeneric(expectedLambdaArgTys[argIndex], NotNull{genericTypesAndPacks}))
-                            solver->bind(NotNull{constraint}, lambdaArgTys[argIndex], expectedLambdaArgTys[argIndex]);
-                    }
-                }
 
                 if (FFlag::LuauBidirectionalInferenceBetterLambdaHandling)
                 {
@@ -432,11 +414,11 @@ struct BidirectionalTypePusher
 } // namespace
 
 PushTypeResult pushTypeInto(
-    NotNull<DenseHashMap<const AstExpr*, TypeId>> astTypes,
-    NotNull<DenseHashMap<const AstExpr*, TypeId>> astExpectedTypes,
+    NotNull<DenseHashMap2<const AstExpr*, TypeId>> astTypes,
+    NotNull<DenseHashMap2<const AstExpr*, TypeId>> astExpectedTypes,
     NotNull<ConstraintSolver> solver,
     NotNull<const Constraint> constraint,
-    NotNull<DenseHashSet<const void*>> genericTypesAndPacks,
+    NotNull<DenseHashSet2<const void*>> genericTypesAndPacks,
     NotNull<Unifier2> unifier,
     NotNull<Subtyping> subtyping,
     TypeId expectedType,

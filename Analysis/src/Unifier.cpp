@@ -16,8 +16,8 @@
 
 LUAU_FASTINT(LuauTypeInferTypePackLoopLimit)
 LUAU_FASTFLAGVARIABLE(LuauInstantiateInSubtyping)
-LUAU_FASTFLAGVARIABLE(LuauTransitiveSubtyping)
 LUAU_FASTFLAGVARIABLE(LuauFixIndexerSubtypingOrdering)
+LUAU_FASTFLAG(LuauRefactorStringSemanticSubtyping)
 
 namespace Luau
 {
@@ -141,7 +141,7 @@ void promoteTypeLevels(TxnLog& log, const TypeArena* typeArena, TypeLevel minLev
 
 struct SkipCacheForType final : TypeOnceVisitor
 {
-    SkipCacheForType(const DenseHashMap<TypeId, bool>& skipCacheForType, const TypeArena* typeArena)
+    SkipCacheForType(const DenseHashMap2<TypeId, bool>& skipCacheForType, const TypeArena* typeArena)
         : TypeOnceVisitor("SkipCacheForType", /* skipBoundTypes */ false)
         , skipCacheForType(skipCacheForType)
         , typeArena(typeArena)
@@ -251,7 +251,7 @@ struct SkipCacheForType final : TypeOnceVisitor
         return false;
     }
 
-    const DenseHashMap<TypeId, bool>& skipCacheForType;
+    const DenseHashMap2<TypeId, bool>& skipCacheForType;
     const TypeArena* typeArena = nullptr;
     bool result = false;
 };
@@ -955,7 +955,7 @@ void Unifier::tryUnifyIntersectionWithType(TypeId subTy, const IntersectionType*
         innerState->tryUnify_(type, superTy, isFunctionCall);
 
         // TODO: This sets errorSuppressed to true if any of the parts is error-suppressing,
-        // in paricular any & T is error-suppressing. Really, errorSuppressed should be true if
+        // in particular any & T is error-suppressing. Really, errorSuppressed should be true if
         // all of the parts are error-suppressing, but that fails to typecheck lua-apps.
         if (innerState->errors.empty())
         {
@@ -2396,14 +2396,21 @@ void Unifier::tryUnifyNegations(TypeId subTy, TypeId superTy)
     if (!subNorm || !superNorm)
         return reportError(location, NormalizationTooComplex{});
 
-    // T </: ~U iff T <: U
-    std::unique_ptr<Unifier> state = makeChildUnifier();
-    state->tryUnifyNormalizedTypes(subTy, superTy, *subNorm, *superNorm, "");
-    if (state->errors.empty())
-        reportError(location, TypeMismatch{superTy, subTy, mismatchContext()});
+    if (FFlag::LuauRefactorStringSemanticSubtyping)
+    {
+        tryUnifyNormalizedTypes(subTy, superTy, *subNorm, *superNorm, "");
+    }
+    else
+    {
+        // T </: ~U iff T <: U
+        std::unique_ptr<Unifier> state = makeChildUnifier();
+        state->tryUnifyNormalizedTypes(subTy, superTy, *subNorm, *superNorm, "");
+        if (state->errors.empty())
+            reportError(location, TypeMismatch{superTy, subTy, mismatchContext()});
+    }
 }
 
-static void queueTypePack(std::vector<TypeId>& queue, DenseHashSet<TypePackId>& seenTypePacks, Unifier& state, TypePackId a, TypePackId anyTypePack)
+static void queueTypePack(std::vector<TypeId>& queue, DenseHashSet2<TypePackId>& seenTypePacks, Unifier& state, TypePackId a, TypePackId anyTypePack)
 {
     while (true)
     {
@@ -2494,8 +2501,8 @@ void Unifier::tryUnifyVariadics(TypePackId subTp, TypePackId superTp, bool rever
 static void tryUnifyWithAny(
     std::vector<TypeId>& queue,
     Unifier& state,
-    DenseHashSet<TypeId>& seen,
-    DenseHashSet<TypePackId>& seenTypePacks,
+    DenseHashSet2<TypeId>& seen,
+    DenseHashSet2<TypePackId>& seenTypePacks,
     const TypeArena* typeArena,
     TypeId anyType,
     TypePackId anyTypePack
@@ -2640,7 +2647,7 @@ bool Unifier::occursCheck(TypeId needle, TypeId haystack, bool reversed)
     return occurs;
 }
 
-bool Unifier::occursCheck(DenseHashSet<TypeId>& seen, TypeId needle, TypeId haystack)
+bool Unifier::occursCheck(DenseHashSet2<TypeId>& seen, TypeId needle, TypeId haystack)
 {
     RecursionLimiter _ra("Unifier::occursCheck", &sharedState.counters.recursionCount, sharedState.counters.recursionLimit);
 
@@ -2700,7 +2707,7 @@ bool Unifier::occursCheck(TypePackId needle, TypePackId haystack, bool reversed)
     return occurs;
 }
 
-bool Unifier::occursCheck(DenseHashSet<TypePackId>& seen, TypePackId needle, TypePackId haystack)
+bool Unifier::occursCheck(DenseHashSet2<TypePackId>& seen, TypePackId needle, TypePackId haystack)
 {
     needle = log.follow(needle);
     haystack = log.follow(haystack);

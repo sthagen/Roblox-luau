@@ -2,7 +2,7 @@
 #pragma once
 
 #include "Luau/AssemblyBuilderX64.h"
-#include "Luau/DenseHash.h"
+#include "Luau/DenseHash2.h"
 #include "Luau/IrData.h"
 #include "Luau/RegisterX64.h"
 #include "Luau/SmallVector.h"
@@ -105,13 +105,13 @@ struct IrRegAllocX64
     std::array<uint32_t, 16> xmmInstUsers;
     uint8_t usableXmmRegCount = 0;
 
-    std::bitset<512> usedSpillSlotHalfs; // A bit for every stack slot split in 4 byte halfs
+    std::bitset<512> usedSpillSlotHalfs; // A bit for every stack slot split in 4 byte halves
     unsigned maxUsedSlot = 0;            // Maximum number of 8 byte stack slots used
 
     unsigned nextSpillId = 1;
     std::vector<IrSpillX64> spills;
 
-    DenseHashMap<uint32_t, ExitSyncArgsX64> exitSyncArgs{~0u};
+    DenseHashMap2<uint32_t, ExitSyncArgsX64> exitSyncArgs;
 
     uint32_t allocActionCount = 0;
 };

@@ -1,7 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "IrLoweringA64.h"
 
-#include "Luau/DenseHash.h"
+#include "Luau/DenseHash2.h"
 #include "Luau/IrData.h"
 #include "Luau/IrUtils.h"
 #include "Luau/LoweringStats.h"
@@ -13,10 +13,7 @@
 #include "lgc.h"
 
 LUAU_FASTFLAGVARIABLE(LuauCodegenFixBufferLenCheck)
-LUAU_FASTFLAGVARIABLE(LuauCodegenFixTwoResA64Builtin)
-LUAU_FASTFLAG(LuauYieldIter2)
 LUAU_FASTFLAG(LuauCIProto)
-LUAU_FASTFLAG(LuauCodegenSharedLog)
 
 namespace Luau
 {
@@ -240,17 +237,9 @@ static bool emitBuiltin(AssemblyBuilderA64& build, IrFunction& function, IrRegAl
 
         if (nresults == 2)
         {
-            if (FFlag::LuauCodegenFixTwoResA64Builtin)
-            {
-                RegisterA64 temp2 = regs.allocTemp(KindA64::w);
-                build.ldr(temp2, sTemporary);
-                build.scvtf(d1, temp2);
-            }
-            else
-            {
-                build.ldr(w0, sTemporary);
-                build.scvtf(d1, w0);
-            }
+            RegisterA64 temp2 = regs.allocTemp(KindA64::w);
+            build.ldr(temp2, sTemporary);
+            build.scvtf(d1, temp2);
 
             build.str(d1, mem(rBase, (res + 1) * sizeof(TValue) + offsetof(TValue, value.n)));
             build.str(temp, mem(rBase, (res + 1) * sizeof(TValue) + offsetof(TValue, tt)));
@@ -282,6 +271,35 @@ static bool emitBuiltin(AssemblyBuilderA64& build, IrFunction& function, IrRegAl
     }
 }
 
+static void emitDispatchLuauCall(AssemblyBuilderA64& build, ModuleHelpers& helpers)
+{
+    build.ldr(x1, mem(rState, offsetof(lua_State, ci)));
+
+    // Switch current Closure
+    build.ldr(rClosure, mem(x1, offsetof(CallInfo, func)));
+    build.ldr(rClosure, mem(rClosure, offsetof(TValue, value.gc)));
+
+    if (FFlag::LuauCIProto)
+        build.ldr(x2, mem(x1, offsetof(CallInfo, p)));
+    else
+        build.ldr(x2, mem(rClosure, offsetof(Closure, l.p)));
+
+    // Switch current code and constants
+    static_assert(offsetof(Proto, code) == offsetof(Proto, k) + sizeof(Proto::k));
+    build.ldp(rConstants, rCode, mem(x2, offsetof(Proto, k)));
+
+    // Get native function entry
+    build.ldr(x3, mem(x2, offsetof(Proto, exectarget)));
+    build.cbz(x3, helpers.exitContinueVm);
+
+    // Mark call frame as native
+    build.ldr(w4, mem(x1, offsetof(CallInfo, flags)));
+    build.orr(w4, w4, LUA_CALLINFO_NATIVE);
+    build.str(w4, mem(x1, offsetof(CallInfo, flags)));
+
+    build.br(x3);
+}
+
 static uint64_t getDoubleBits(double value)
 {
     uint64_t result;
@@ -306,7 +324,7 @@ IrLoweringA64::IrLoweringA64(LogBuilder* logger, AssemblyBuilderA64& build, Modu
     , stats(stats)
     , regs(logger, build, function, stats, {{x0, x15}, {x16, x17}, {q0, q7}, {q16, q31}})
     , valueTracker(logger, function)
-    , exitHandlerMap(~0u)
+
 {
     valueTracker.setRestoreCallback(
         this,
@@ -2168,6 +2186,34 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         build.cmp(regOp(OP_A(inst)), uint16_t(0));
         build.b(ConditionA64::Less, labelOp(OP_B(inst)));
         break;
+
+    case IrCmd::INVOKE_FASTPCALL:
+    {
+        regs.spill(index);
+
+        // fastPcallSetup(L, ra, pfid, nparams, nresults)
+        build.mov(x0, rState);
+        build.add(x1, rBase, uint16_t(vmRegOp(OP_A(inst)) * sizeof(TValue)));
+        build.mov(w2, uintOp(OP_B(inst)));
+        build.mov(w3, intOp(OP_C(inst)));
+        build.mov(w4, intOp(OP_D(inst)));
+        build.ldr(x5, mem(rNativeContext, offsetof(NativeContext, fastPcallSetup)));
+        build.blr(x5);
+
+        emitUpdateBase(build);
+
+        Label cont;
+
+        build.cmp(w0, uint16_t(0));
+        build.b(ConditionA64::Less, cont);                        // Continue to next instruction on -1
+        build.b(ConditionA64::Greater, helpers.exitNoContinueVm); // Yield on 1
+
+        // Continue Luau call on 0
+        emitDispatchLuauCall(build, helpers);
+
+        build.setLabel(cont);
+        break;
+    }
     case IrCmd::DO_ARITH:
         regs.spill(index);
         build.mov(x0, rState);
@@ -2456,6 +2502,22 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
     case IrCmd::CHECK_SAFE_ENV:
     {
         checkSafeEnv(OP_A(inst), index, next);
+        break;
+    }
+    case IrCmd::CHECK_YIELDABLE:
+    {
+        Label fresh;
+        Label& fail = getTargetLabel(OP_A(inst), index, fresh);
+
+        RegisterA64 temp1 = regs.allocTemp(KindA64::w);
+        RegisterA64 temp2 = regs.allocTemp(KindA64::w);
+
+        build.ldrh(temp1, mem(rState, offsetof(lua_State, nCcalls)));
+        build.ldrh(temp2, mem(rState, offsetof(lua_State, baseCcalls)));
+        build.cmp(temp1, temp2);
+        build.b(ConditionA64::Greater, fail);
+
+        finalizeTargetLabel(OP_A(inst), index, fresh);
         break;
     }
     case IrCmd::CHECK_ARRAY_SIZE:
@@ -3017,23 +3079,14 @@ void IrLoweringA64::lowerInst(IrInst& inst, uint32_t index, const IrBlock& next)
         build.mov(x0, rState);
         build.mov(w1, vmRegOp(OP_A(inst)));
         build.mov(w2, intOp(OP_B(inst)));
+        build.ldr(x3, mem(rNativeContext, offsetof(NativeContext, forgLoopNonTableFallback)));
+        build.blr(x3);
 
-        if (FFlag::LuauYieldIter2)
-        {
-            build.ldr(x3, mem(rNativeContext, offsetof(NativeContext, forgLoopNonTableFallback)));
-            build.blr(x3);
-            emitUpdateBase(build);
-            build.cmp(w0, uint16_t(0));
-            build.b(ConditionA64::Less, helpers.exitNoContinueVm);
-            build.b(ConditionA64::Greater, labelOp(OP_C(inst)));
-        }
-        else
-        {
-            build.ldr(x3, mem(rNativeContext, offsetof(NativeContext, forgLoopNonTableFallback_DEPRECATED)));
-            build.blr(x3);
-            emitUpdateBase(build);
-            build.cbnz(w0, labelOp(OP_C(inst)));
-        }
+        emitUpdateBase(build);
+
+        build.cmp(w0, uint16_t(0));
+        build.b(ConditionA64::Less, helpers.exitNoContinueVm);
+        build.b(ConditionA64::Greater, labelOp(OP_C(inst)));
 
         jumpOrFallthrough(blockOp(OP_D(inst)), next);
         break;
@@ -3794,10 +3847,8 @@ void IrLoweringA64::finishBlock(const IrBlock& curr, const IrBlock& next)
 
 void IrLoweringA64::finishFunction()
 {
-    if (FFlag::LuauCodegenSharedLog && logger && logger->options.includeAssembly)
+    if (logger && logger->options.includeAssembly)
         logger->formatAppend("; interrupt handlers\n");
-    else if (!FFlag::LuauCodegenSharedLog && build.logText)
-        build.logAppend("; interrupt handlers\n");
 
     for (InterruptHandler& handler : interruptHandlers)
     {
@@ -3807,10 +3858,8 @@ void IrLoweringA64::finishFunction()
         build.b(helpers.interrupt);
     }
 
-    if (FFlag::LuauCodegenSharedLog && logger && logger->options.includeAssembly)
+    if (logger && logger->options.includeAssembly)
         logger->formatAppend("; exit handlers\n");
-    else if (!FFlag::LuauCodegenSharedLog && build.logText)
-        build.logAppend("; exit handlers\n");
 
     for (ExitHandler& handler : exitHandlers)
     {
@@ -3921,10 +3970,8 @@ void IrLoweringA64::allocAndIncrementCounterAt(CodeGenCounter kind, uint32_t pcp
     if (!function.recordCounters)
         return;
 
-    if (FFlag::LuauCodegenSharedLog && logger && logger->options.includeAssembly)
+    if (logger && logger->options.includeAssembly)
         logger->formatAppend("; counter kind %u at pcpos %d\n", unsigned(kind), pcpos);
-    else if (!FFlag::LuauCodegenSharedLog && build.logText)
-        build.logAppend("; counter kind %u at pcpos %d\n", unsigned(kind), pcpos);
 
     // {uint32_t, uint32_t, uint64_t}
     function.extraNativeData.push_back(unsigned(kind));
