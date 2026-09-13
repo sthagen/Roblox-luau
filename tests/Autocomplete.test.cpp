@@ -21,12 +21,11 @@ LUAU_FASTINT(LuauTypeInferRecursionLimit)
 
 LUAU_FASTFLAG(LuauAutocompleteMetatableInheritance)
 LUAU_FASTFLAG(LuauCheckTypeForDeprecated)
-LUAU_FASTFLAG(LuauDeprecatedAttributeOnAnonymousFunctions)
-LUAU_FASTFLAG(LuauAutocompleteSkipErrorTypeInUnion)
-LUAU_FASTFLAG(LuauCheckTypeForDeprecated)
-LUAU_FASTFLAG(LuauDeprecatedAttributeOnAnonymousFunctions)
 LUAU_FASTFLAG(LuauAutocompleteDotMethodConversion)
 LUAU_FASTFLAG(LuauUseExplicitTypeArgsInGenerics)
+LUAU_FASTFLAG(DebugLuauForceOldSolver)
+LUAU_FASTFLAG(DebugLuauIfLocalSyntax)
+LUAU_FASTFLAG(DebugLuauIfLocalAnalysis)
 
 using namespace Luau;
 
@@ -2086,7 +2085,9 @@ local function b(a: ((done) -> number) -> number) return a(function(done) return
 return {a = a, b = b}
     )";
 
-    LUAU_REQUIRE_NO_ERRORS(getFrontend().check("Module/A"));
+    CheckResult result = getFrontend().check("Module/A");
+    ignoreMissingAnnotations(result);
+    LUAU_REQUIRE_NO_ERRORS(result);
 
     fileResolver.source["Module/B"] = R"(
 local ex = require(script.Parent.A)
@@ -2120,7 +2121,9 @@ local function b(a: ((done) -> number) -> number) return a(function(done) return
 return {a = a, b = b}
     )";
 
-    LUAU_REQUIRE_NO_ERRORS(getFrontend().check("Module/A"));
+    CheckResult result = getFrontend().check("Module/A");
+    ignoreMissingAnnotations(result);
+    LUAU_REQUIRE_NO_ERRORS(result);
 
     fileResolver.source["Module/B"] = R"(
 local ex = require(script.Parent.A)
@@ -5362,7 +5365,7 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_deprecated_on_local_function")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_deprecated_on_anonymous_function")
 {
-    ScopedFastFlag sffs[] = {{FFlag::LuauCheckTypeForDeprecated, true}, {FFlag::LuauDeprecatedAttributeOnAnonymousFunctions, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauCheckTypeForDeprecated, true}};
 
     check(R"(
         local foo = \@deprecated function()
@@ -5503,7 +5506,7 @@ TEST_CASE_FIXTURE(ACFixture, "we_know_the_fields_of_a_class_instance")
             public y: number
         end
 
-        local p = Point2d { x=3, y=4 }
+        local p = Point2d.new { x=3, y=4 }
 
         local q = p.@1
     )");
@@ -5843,8 +5846,6 @@ TEST_CASE_FIXTURE(ACFixture, "class_autocomplete_classname_inside_method")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_on_nonexistent_table")
 {
-    ScopedFastFlag _{FFlag::LuauAutocompleteSkipErrorTypeInUnion, true};
-
     check(R"(
         local mygame = {}
 
@@ -5902,6 +5903,147 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_deprecated_on_recursive_intersection"
 
     auto ac = autocomplete('1');
     CHECK(ac.entryMap.count("var"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_binding_is_in_scope_in_then_body")
+{
+    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {}
+        if local x = t then
+            @1
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("x"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_binding_offers_member_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {foo = 1, bar = 2}
+        if local x = t then
+            x.@1
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("bar"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_value_offers_expression_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+
+    check(R"(
+        local thing = {}
+        if local x = @1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("thing"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_value_offers_member_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {foo = 1, bar = 2}
+        if local x = t.@1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("bar"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "elseif_local_value_offers_expression_completion")
+{
+    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+
+    check(R"(
+        local thing = {}
+        if false then
+        elseif local x = @1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("thing"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "elseif_local_value_completes")
+{
+    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {foo = 1, bar = 2}
+        if false then
+        elseif local x = t.@1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("bar"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_local_annotation_correctly_suggests_types")
+{
+    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+
+    check(R"(
+        local one = 4
+        local two = "hello"
+        if local x: number = o@1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("one"));
+    CHECK(ac.entryMap["one"].typeCorrect == TypeCorrectKind::Correct);
+    CHECK(ac.entryMap["two"].typeCorrect == TypeCorrectKind::None);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "elseif_local_annotation_correctly_suggests_types")
+{
+    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+
+    check(R"(
+        local one = 4
+        local two = "hello"
+        if false then
+        elseif local x: number = o@1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("one"));
+    CHECK(ac.entryMap["one"].typeCorrect == TypeCorrectKind::Correct);
+    CHECK(ac.entryMap["two"].typeCorrect == TypeCorrectKind::None);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "if_const_value_completes")
+{
+    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+
+    check(R"(
+        local t = {foo = 1, bar = 2}
+        if const x = t.@1 then
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("bar"));
 }
 
 TEST_SUITE_END();

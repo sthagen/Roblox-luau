@@ -15,7 +15,6 @@
 #include <stdio.h>
 
 LUAU_FASTFLAG(LuauCIProto)
-LUAU_FASTFLAG(LuauManagedDebugNames)
 LUAU_FASTFLAGVARIABLE(LuauEnumMoreEdges)
 
 static void validateobjref(global_State* g, GCObject* f, GCObject* t)
@@ -106,6 +105,9 @@ static void validatestack(global_State* g, lua_State* l)
 
     if (l->namecall)
         validateobjref(g, obj2gco(l), obj2gco(l->namecall));
+
+    if (l->finalizers)
+        validateobjref(g, obj2gco(l), obj2gco(l->finalizers));
 
     for (UpVal* uv = l->openupval; uv; uv = uv->u.open.threadnext)
     {
@@ -417,16 +419,8 @@ static void dumpclosure(FILE* f, Closure* cl)
 
     if (cl->isC)
     {
-        if (FFlag::LuauManagedDebugNames)
-        {
-            if (TString* str = cl->c.debugname)
-                fprintf(f, ",\"name\":\"%s\"", getstr(str));
-        }
-        else
-        {
-            if (cl->c.debugname_DEPRECATED)
-                fprintf(f, ",\"name\":\"%s\"", cl->c.debugname_DEPRECATED + 0);
-        }
+        if (TString* str = cl->c.debugname)
+            fprintf(f, ",\"name\":\"%s\"", getstr(str));
 
         if (cl->nupvalues)
         {
@@ -472,6 +466,12 @@ static void dumpthread(FILE* f, lua_State* th)
 
     fprintf(f, ",\"env\":");
     dumpref(f, obj2gco(th->gt));
+
+    if (th->finalizers)
+    {
+        fprintf(f, ",\"finalizers\":");
+        dumpref(f, obj2gco(th->finalizers));
+    }
 
     Closure* tcl = 0;
     Proto* cip = nullptr;
@@ -523,10 +523,7 @@ static void dumpthread(FILE* f, lua_State* th)
 
                 if (cl->isC)
                 {
-                    if (FFlag::LuauManagedDebugNames)
-                        fprintf(f, "\"frame:%s\"", cl->c.debugname ? getstr(cl->c.debugname) : "[C]");
-                    else
-                        fprintf(f, "\"frame:%s\"", cl->c.debugname_DEPRECATED ? cl->c.debugname_DEPRECATED : "[C]");
+                    fprintf(f, "\"frame:%s\"", cl->c.debugname ? getstr(cl->c.debugname) : "[C]");
                 }
                 else
                 {
@@ -844,12 +841,9 @@ static void enumclosure(EnumContext* ctx, Closure* cl)
 {
     if (cl->isC)
     {
-        if (FFlag::LuauManagedDebugNames)
-            enumnode(ctx, obj2gco(cl), sizeCclosure(cl->nupvalues), cl->c.debugname ? getstr(cl->c.debugname) : nullptr);
-        else
-            enumnode(ctx, obj2gco(cl), sizeCclosure(cl->nupvalues), cl->c.debugname_DEPRECATED);
+        enumnode(ctx, obj2gco(cl), sizeCclosure(cl->nupvalues), cl->c.debugname ? getstr(cl->c.debugname) : nullptr);
 
-        if (FFlag::LuauEnumMoreEdges && FFlag::LuauManagedDebugNames && cl->c.debugname)
+        if (FFlag::LuauEnumMoreEdges && cl->c.debugname)
             enumedge(ctx, obj2gco(cl), obj2gco(cl->c.debugname), "name");
     }
     else
@@ -945,6 +939,9 @@ static void enumthread(EnumContext* ctx, lua_State* th)
     }
 
     enumedge(ctx, obj2gco(th), obj2gco(th->gt), "globals");
+
+    if (th->finalizers)
+        enumedge(ctx, obj2gco(th), obj2gco(th->finalizers), "finalizers");
 
     if (th->top > th->stack)
         enumedges(ctx, obj2gco(th), th->stack, th->top - th->stack, "stack");

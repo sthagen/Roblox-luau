@@ -612,6 +612,31 @@ AstStatIf::AstStatIf(
 {
 }
 
+AstStatIf::AstStatIf(
+    const Location& location,
+    AstExpr* condition,
+    AstStatBlock* thenbody,
+    AstStat* elsebody,
+    const std::optional<Location>& thenLocation,
+    const std::optional<Location>& elseLocation,
+    AstLocal* conditionLocal,
+    bool conditionIsConst,
+    const std::optional<Location>& conditionKeywordLocation,
+    const std::optional<Location>& conditionEqualsLocation
+)
+    : AstStat(ClassIndex(), location)
+    , condition(condition)
+    , thenbody(thenbody)
+    , elsebody(elsebody)
+    , thenLocation(thenLocation)
+    , elseLocation(elseLocation)
+    , conditionLocal(conditionLocal)
+    , conditionIsConst(conditionIsConst)
+    , conditionKeywordLocation(conditionKeywordLocation)
+    , conditionEqualsLocation(conditionEqualsLocation)
+{
+}
+
 void AstStatIf::visit(AstVisitor* visitor)
 {
     if (visitor->visit(this))
