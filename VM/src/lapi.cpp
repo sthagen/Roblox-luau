@@ -22,6 +22,7 @@
 LUAU_FASTFLAG(LuauGcTraceUdata)
 LUAU_FASTFLAGVARIABLE(LuauNewPointerEncode)
 LUAU_FASTFLAGVARIABLE(DebugLuauCoroutineFinally)
+LUAU_FASTFLAGVARIABLE(LuauFrozenMetaButterfly)
 
 /*
  * This file contains most implementations of core Lua APIs from lua.h.
@@ -909,7 +910,11 @@ void lua_setreadonly(lua_State* L, int objindex, int enabled)
     api_check(L, ttistable(o));
     LuaTable* t = hvalue(o);
     api_check(L, t != hvalue(registry(L)));
-    t->readonly = bool(enabled);
+
+    if (FFlag::LuauFrozenMetaButterfly)
+        luaH_setreadonly(L, t, enabled != 0);
+    else
+        t->readonly = bool(enabled);
 }
 
 int lua_getreadonly(lua_State* L, int objindex)
@@ -917,8 +922,16 @@ int lua_getreadonly(lua_State* L, int objindex)
     const TValue* o = index2addr(L, objindex);
     api_check(L, ttistable(o));
     LuaTable* t = hvalue(o);
-    int res = t->readonly;
-    return res;
+
+    if (FFlag::LuauFrozenMetaButterfly)
+    {
+        return luaH_getreadonly(t);
+    }
+    else
+    {
+        int res = t->readonly;
+        return res;
+    }
 }
 
 void lua_setsafeenv(lua_State* L, int objindex, int enabled)
@@ -1655,7 +1668,7 @@ void* lua_newuserdatataggedwithmetatable(lua_State* L, size_t sz, int tag)
     return u->data;
 }
 
-void* lua_newuserdatadtor(lua_State* L, size_t sz, void (*dtor)(void*))
+void* lua_newuserdatadtor(lua_State* L, size_t sz, lua_Destructor dtor)
 {
     api_check(L, dtor != nullptr);
     luaC_checkGC(L);

@@ -60,6 +60,7 @@ LUAU_FASTFLAG(LuauCodegenProtectData)
 LUAU_FASTFLAG(LuauBytecodeFold)
 LUAU_FASTFLAG(LuauEmitCallFeedback)
 LUAU_FASTINT(CodegenHeuristicsInstructionLimit)
+LUAU_FASTFLAG(LuauTableArrayAdjustCheck)
 LUAU_FASTFLAG(LuauIntegerLibrary)
 LUAU_FASTFLAG(LuauIntegerType2)
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
@@ -67,6 +68,7 @@ LUAU_FASTFLAG(LuauCodegenBufferInteger)
 LUAU_FASTFLAG(LuauCodegenDseRestoreHintUpdate)
 LUAU_FASTFLAG(DebugLuauUserDefinedClassesRuntime)
 LUAU_FASTFLAG(LuauCompileEmitVectorDouble)
+LUAU_FASTFLAG(LuauCompileNoFoldVectorEqW)
 LUAU_FASTFLAG(LuauGcTraceUdata)
 LUAU_FASTFLAG(LuauEnumMoreEdges)
 LUAU_DYNAMIC_FASTFLAG(LuauTableMoveTimeoutFix)
@@ -77,6 +79,7 @@ LUAU_FASTFLAG(LuauBytecodeCostModel)
 LUAU_FASTFLAG(LuauVirtualBcBuilder)
 LUAU_FASTFLAG(LuauNewPointerEncode)
 LUAU_FASTFLAG(DebugLuauIfLocalSyntax)
+LUAU_FASTFLAG(LuauSandboxFreezesVectorMetatable)
 LUAU_FASTFLAG(LuauBufferCage)
 LUAU_FASTFLAG(LuauCompileUndoEmitAdjust)
 LUAU_FASTFLAG(DebugLuauCoroutineFinally)
@@ -1381,6 +1384,7 @@ TEST_CASE("Sort")
 TEST_CASE("Move")
 {
     ScopedFastFlag luauTableMoveTimeoutFix{DFFlag::LuauTableMoveTimeoutFix, true};
+    ScopedFastFlag luauTableArrayAdjustCheck{FFlag::LuauTableArrayAdjustCheck, true};
 
     runConformance("move.luau");
 }
@@ -1470,7 +1474,7 @@ TEST_CASE("JitInliner")
             luaL_error(L, "timeout");
     };
 
-    for (int test = 1; test <= 2; ++test)
+    for (int test = 1; test <= 3; ++test)
     {
         lua_State* T = lua_newthread(L);
 
@@ -1917,6 +1921,7 @@ TEST_CASE("CYield")
 TEST_CASE("Vector")
 {
     ScopedFastFlag luauCompileEmitVectorDouble{FFlag::LuauCompileEmitVectorDouble, true};
+    ScopedFastFlag luauCompileNoFoldVectorEqW{FFlag::LuauCompileNoFoldVectorEqW, true};
 
     lua_CompileOptions copts = defaultOptions();
     Luau::CodeGen::CompilationOptions nativeOpts = defaultCodegenOptions();
@@ -2504,7 +2509,7 @@ TEST_CASE("Reference")
     lua_newuserdatadtor(
         L,
         0,
-        [](void*)
+        [](lua_State*, void*)
         {
             dtorhits++;
         }
@@ -2512,7 +2517,7 @@ TEST_CASE("Reference")
     lua_newuserdatadtor(
         L,
         0,
-        [](void*)
+        [](lua_State*, void*)
         {
             dtorhits++;
         }
@@ -2550,7 +2555,7 @@ TEST_CASE("NewUserdataOverflow")
         [](lua_State* L1)
         {
             // The following userdata request might cause an overflow.
-            lua_newuserdatadtor(L1, SIZE_MAX, [](void* d) {});
+            lua_newuserdatadtor(L1, SIZE_MAX, [](lua_State*, void* d) {});
             // The overflow might segfault in the following call.
             lua_getmetatable(L1, -1);
             return 0;
@@ -3909,7 +3914,7 @@ TEST_CASE("UserdataApi")
     void* ud3 = lua_newuserdatadtor(
         L,
         4,
-        [](void* data)
+        [](lua_State*, void* data)
         {
             dtorhits += *(int*)data;
         }
@@ -3918,7 +3923,7 @@ TEST_CASE("UserdataApi")
     void* ud4 = lua_newuserdatadtor(
         L,
         1,
-        [](void* data)
+        [](lua_State*, void* data)
         {
             dtorhits += *(char*)data;
         }
@@ -4179,7 +4184,7 @@ TEST_CASE("UserdataAlignment")
 
         for (int i = 0; i < 10; i++)
         {
-            void* data = lua_newuserdatadtor(L, size, [](void*) {});
+            void* data = lua_newuserdatadtor(L, size, [](lua_State*, void*) {});
             LUAU_ASSERT(uintptr_t(data) % 16 == 0);
             lua_pop(L, 1);
         }
@@ -5393,6 +5398,29 @@ TEST_CASE("BytecodeDumpLinked")
     Luau::Bytecode::BcFunction<TValue*> rbc{};
 
     CHECK_EQ(toString(rbc, true), "; function() maxstacksize: 0 upvalues: 0 flags: 0\n");
+}
+
+TEST_CASE("SandboxFreezesVectorMetatable")
+{
+    ScopedFastFlag freezeVectorMetatable{FFlag::LuauSandboxFreezesVectorMetatable, true};
+
+    StateRef globalState(luaL_newstate(), lua_close);
+    lua_State* L = globalState.get();
+
+    lua_pushvector3(L, 0.0f, 0.0f, 0.0f);
+
+    luaL_newmetatable(L, "Vector7");
+    lua_pushboolean(L, true);
+    lua_setfield(L, -2, "Supported");
+
+    lua_setmetatable(L, -2);
+
+    luaL_sandbox(L);
+
+    lua_pushvector3(L, 0.0f, 0.0f, 0.0f);
+
+    CHECK(lua_getmetatable(L, -1));
+    CHECK(lua_getreadonly(L, -1));
 }
 
 TEST_SUITE_END();
