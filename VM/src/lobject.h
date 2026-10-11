@@ -340,7 +340,15 @@ typedef struct LuauVector
 
 enum FeedbackVectorSlotKind
 {
-    CALL_TARGET
+    CALL_TARGET,
+    CONSTRUCT,
+};
+
+enum LuauClassConstructMatch
+{
+    LCM_MISMATCH,
+    LCM_MATCH,
+    LCM_MATCH_ZEROED,
 };
 
 struct FeedbackVectorSlot
@@ -355,6 +363,13 @@ struct FeedbackVectorSlot
             uint32_t proto;
             uint32_t hits;
         } call_target;
+
+        struct
+        {
+            uint32_t shape;
+            uint32_t classid;
+            LuauClassConstructMatch match;
+        } construct;
     };
 };
 
@@ -562,6 +577,9 @@ typedef struct LuauClass
 
     TString* name;
 
+    // Used to match feedback vector construction slots
+    uint32_t id;
+
     // The superclass of this class. NULL if this class doesn't inherit.
     LuauClass* super;
 
@@ -574,6 +592,9 @@ typedef struct LuauClass
 
     // Mapping from offset to member name. Instance member offsets are stored before static member offsets.
     TString** offsettomember;
+
+    // Metatable for this *class object*. At time of writing this only contains __call
+    LuaTable* metatable;
 
     // Metatable for instances of this class. NULL until the first metamethod
     // is added via luaR_addclassmember.

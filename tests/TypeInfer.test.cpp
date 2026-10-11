@@ -29,7 +29,6 @@ LUAU_FASTFLAG(DebugLuauMagicTypes)
 LUAU_FASTFLAG(DebugLuauForbidInternalTypes)
 LUAU_FASTFLAG(LuauSubtypingMissingPropertiesAsNil)
 LUAU_FASTFLAG(LuauImproveUniqueTableWidthSubtyping)
-LUAU_FASTFLAG(LuauCheckReadTyWhenRelatingExtern)
 LUAU_FASTFLAG(LuauDoNotIceForBindingGeneric)
 
 using namespace Luau;
@@ -1158,6 +1157,8 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "cli_50041_committing_txnlog_in_apollo_client_error")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
@@ -2516,6 +2517,8 @@ TEST_CASE_FIXTURE(Fixture, "if_then_else_bidirectional_inference")
 
 TEST_CASE_FIXTURE(Fixture, "if_then_else_two_errors")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     CheckResult results = check(R"(
@@ -2820,6 +2823,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "iterate_over_table_with_optional_indexer_val
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "iterate_over_local_table_with_optional_indexer_values")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     CheckResult result = check(R"(
@@ -3046,6 +3051,8 @@ TEST_CASE_FIXTURE(Fixture, "generic_P_inference_with_optional_param_does_not_lea
 
 TEST_CASE_FIXTURE(Fixture, "generic_P_with_intersection_props_and_partial_table")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
     ScopedFastFlag _{FFlag::LuauSubtypingMissingPropertiesAsNil, true};
@@ -3074,6 +3081,8 @@ TEST_CASE_FIXTURE(Fixture, "generic_P_with_intersection_props_and_partial_table"
 
 TEST_CASE_FIXTURE(Fixture, "generic_P_widening_with_recursive_optional_field")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
     ScopedFastFlag _{FFlag::LuauSubtypingMissingPropertiesAsNil, true};
@@ -3098,10 +3107,7 @@ TEST_CASE_FIXTURE(Fixture, "generic_P_widening_with_recursive_optional_field")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "fuzzer_relate_extern_table_1")
 {
-    ScopedFastFlag sffs[] = {
-        {FFlag::LuauCheckReadTyWhenRelatingExtern, true},
-        {FFlag::DebugLuauUserDefinedClasses, true},
-    };
+    ScopedFastFlag _ {FFlag::DebugLuauUserDefinedClasses, true};
 
     LUAU_REQUIRE_ERRORS(check(R"(
         class _ end
@@ -3115,10 +3121,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "fuzzer_relate_extern_table_1")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "fuzzer_relate_extern_table_2")
 {
-    ScopedFastFlag sffs[] = {
-        {FFlag::LuauCheckReadTyWhenRelatingExtern, true},
-        {FFlag::DebugLuauUserDefinedClasses, true},
-    };
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
 
     LUAU_REQUIRE_ERRORS(check(R"(
         class _ end

@@ -13,12 +13,12 @@
 #include "lnumutils.h"
 
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 #include <limits.h>
 #include <math.h>
 
-LUAU_FASTFLAGVARIABLE(LuauCodegenSkipDeadPredecessorTags)
 LUAU_FASTFLAG(LuauCodegenPropagateFallbackTags)
 
 namespace Luau
@@ -62,6 +62,7 @@ int getOpLength(LuauOpcode op)
     case LOP_CALLFB:
     case LOP_CMPPROTO:
     case LOP_NEWCLASS:
+    case LOP_CONSTRUCT:
         return 2;
 
     default:
@@ -123,6 +124,7 @@ bool isFastCall(LuauOpcode op)
     case LOP_FASTCALL2K:
     case LOP_FASTCALL3:
     case LOP_FASTPCALL:
+    case LOP_FINCONSTRUCT:
         return true;
 
     default:
@@ -324,6 +326,7 @@ IrValueKind getCmdValueKind(IrCmd cmd)
     case IrCmd::INVOKE_FASTPCALL:
     case IrCmd::DO_ARITH:
     case IrCmd::DO_LEN:
+    case IrCmd::CONSTRUCT:
     case IrCmd::GET_TABLE:
     case IrCmd::SET_TABLE:
     case IrCmd::GET_CACHED_IMPORT:
@@ -1895,7 +1898,7 @@ void propagateTagsFromPredecessors(
 
     for (uint32_t predIdx : preds)
     {
-        if (FFlag::LuauCodegenSkipDeadPredecessorTags && function.blocks[predIdx].kind == IrBlockKind::Dead)
+        if (function.blocks[predIdx].kind == IrBlockKind::Dead)
             continue;
 
         if (predIdx >= numBlockExitTags)
@@ -1910,7 +1913,7 @@ void propagateTagsFromPredecessors(
 
     for (uint32_t predIdx : preds)
     {
-        if (FFlag::LuauCodegenSkipDeadPredecessorTags && function.blocks[predIdx].kind == IrBlockKind::Dead)
+        if (function.blocks[predIdx].kind == IrBlockKind::Dead)
             continue;
 
         const std::vector<uint8_t>& predTags = function.blockExitTags[predIdx];
@@ -1964,6 +1967,10 @@ std::optional<uint8_t> tryGetLuauTagForBcType(uint8_t bcType, bool ignoreOptiona
         return LUA_TVECTOR;
     case LBC_TYPE_BUFFER:
         return LUA_TBUFFER;
+    case LBC_TYPE_CLASS:
+        return LUA_TCLASS;
+    case LBC_TYPE_OBJECT:
+        return LUA_TOBJECT;
     default:
         if (bcType >= LBC_TYPE_TAGGED_USERDATA_BASE && bcType < LBC_TYPE_TAGGED_USERDATA_END)
             return LUA_TUSERDATA;

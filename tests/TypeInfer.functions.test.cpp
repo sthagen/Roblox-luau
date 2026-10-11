@@ -3,11 +3,9 @@
 #include "Luau/AstQuery.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Error.h"
-#include "Luau/Scope.h"
-#include "Luau/TypeInfer.h"
 #include "Luau/Type.h"
 
-#include "ClassFixture.h"
+#include "ExternTypeFixture.h"
 #include "Fixture.h"
 
 #include "ScopedFlags.h"
@@ -30,6 +28,7 @@ LUAU_FASTFLAG(LuauCallErrorReportingRecoversArgumentLocationsForPacks)
 LUAU_FASTFLAG(LuauRefactorStringSemanticSubtyping)
 LUAU_FASTFLAG(LuauDoNotLeakGenericsInIndexer)
 LUAU_FASTFLAG(LuauThreadGeneralizeThroughConstraintGeneration)
+LUAU_FASTFLAG(LuauDoesCallErrorUnwrapsGroups)
 LUAU_FASTFLAG(LuauFixCallMetamethodErrorReporting)
 LUAU_FASTFLAG(LuauTraverseScopeToFunction)
 LUAU_FASTFLAG(LuauIterativeTypeSearcher)
@@ -776,6 +775,8 @@ TEST_CASE_FIXTURE(Fixture, "higher_order_function_2")
 
 TEST_CASE_FIXTURE(Fixture, "higher_order_function_3")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
 
     CheckResult result = check(R"(
@@ -1027,6 +1028,69 @@ TEST_CASE_FIXTURE(Fixture, "report_exiting_without_return_strict")
 
     FunctionExitsWithoutReturning* inferredErr = get<FunctionExitsWithoutReturning>(result.errors[1]);
     CHECK(inferredErr);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "error_call_diverges_through_grouping")
+{
+    ScopedFastFlag sff{FFlag::LuauDoesCallErrorUnwrapsGroups, true};
+
+    CheckResult result = check(R"(
+        --!strict
+        local function ungrouped(): never
+            error("oops")
+        end
+
+        local function grouped(): never
+            (error)("oops")
+        end
+
+        local function nestedGroups(): never
+            ((error))("oops")
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "assert_call_diverges_through_grouping")
+{
+    ScopedFastFlag sff{FFlag::LuauDoesCallErrorUnwrapsGroups, true};
+
+    CheckResult result = check(R"(
+        --!strict
+        local function ungrouped(): never
+            assert(false)
+        end
+
+        local function grouped(): never
+            (assert)(false)
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "grouped_call_to_shadowed_error_does_not_diverge")
+{
+    ScopedFastFlag sff{FFlag::LuauDoesCallErrorUnwrapsGroups, true};
+
+    CheckResult result = check(R"(
+        --!strict
+        local error = function(_: string) end
+        local assert = function(_: boolean) end
+
+        local function withError(): never
+            (error)("oops")
+        end
+
+        local function withAssert(): never
+            (assert)(false)
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(2, result);
+    CHECK(get<FunctionExitsWithoutReturning>(result.errors[0]));
+    CHECK(get<FunctionExitsWithoutReturning>(result.errors[1]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "calling_function_with_incorrect_argument_type_yields_errors_spanning_argument")
@@ -1430,6 +1494,8 @@ f(function(x) return x * 2 end)
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "infer_generic_function_function_argument")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     // FIXME: CLI-116133 bidirectional type inference needs to push expected types in for higher-order function calls
     DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
@@ -1733,37 +1799,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "function_decl_non_self_sealed_overwrite")
     LUAU_REQUIRE_NO_ERRORS(result2);
 }
 
-TEST_CASE_FIXTURE(BuiltinsFixture, "function_decl_non_self_sealed_overwrite_2")
-{
-    CheckResult result = check(R"(
-local t: { f: ((x: number) -> number)? } = {}
-
-function t.f(x)
-    print(x + 5)
-    return x .. "asd" -- 1st error: we know that return type is a number, not a string
-end
-
-t.f = function(x)
-    print(x + 5)
-    return x .. "asd" -- 2nd error: we know that return type is a number, not a string
-end
-    )");
-
-    ignoreMissingAnnotations(result);
-
-    if (!FFlag::DebugLuauForceOldSolver)
-    {
-        LUAU_CHECK_ERROR_COUNT(2, result);
-        LUAU_CHECK_ERROR(result, WhereClauseNeeded); // x2
-    }
-    else
-    {
-        LUAU_REQUIRE_ERROR_COUNT(2, result);
-        CHECK_EQ(toString(result.errors[0]), R"(Expected this to be 'number', but got 'string')");
-        CHECK_EQ(toString(result.errors[1]), R"(Expected this to be 'number', but got 'string')");
-    }
-}
-
 TEST_CASE_FIXTURE(Fixture, "inferred_higher_order_functions_are_quantified_at_the_right_time2")
 {
     CheckResult result = check(R"(
@@ -1807,48 +1842,6 @@ TEST_CASE_FIXTURE(Fixture, "inferred_higher_order_functions_are_quantified_at_th
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
-}
-
-TEST_CASE_FIXTURE(BuiltinsFixture, "function_decl_non_self_unsealed_overwrite")
-{
-    ScopedFastFlag _{FFlag::LuauCheckFunctionStatementTypes, true};
-
-    CheckResult result = check(R"(
-local t = { f = nil :: ((x: number) -> number)? }
-
-function t.f(x: string): string -- 1st error: new function value type is incompatible
-    return x .. "asd"
-end
-
-t.f = function(x)
-    print(x + 5)
-    return x .. "asd" -- 2nd error: we know that return type is a number, not a string
-end
-    )");
-
-    if (!FFlag::DebugLuauForceOldSolver)
-    {
-        LUAU_CHECK_ERROR_COUNT(2, result);
-        LUAU_CHECK_ERROR(result, WhereClauseNeeded);
-    }
-    else
-    {
-        LUAU_REQUIRE_ERROR_COUNT(2, result);
-        CHECK_EQ(toString(result.errors[0]), R"(Expected this to be
-	'((number) -> number)?'
-but got
-	'(string) -> string'
-caused by:
-  None of the union options are compatible. For example:
-Expected this to be
-	'(number) -> number'
-but got
-	'(string) -> string'
-caused by:
-  Argument #1 type is not compatible.
-Expected this to be 'string', but got 'number')");
-        CHECK_EQ(toString(result.errors[1]), R"(Expected this to be 'number', but got 'string')");
-    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "strict_mode_ok_with_missing_arguments")
@@ -2463,6 +2456,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "attempt_to_call_an_intersection_of_tables_wi
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "call_metamethod_checks_argument_types")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag _{FFlag::LuauFixCallMetamethodErrorReporting, true};
 
     CheckResult result = check(R"(
@@ -2479,6 +2474,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "call_metamethod_checks_argument_types")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "call_metamethod_checks_variadic_argument_types")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag _{FFlag::LuauFixCallMetamethodErrorReporting, true};
 
     CheckResult result = check(R"(
@@ -2496,6 +2493,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "call_metamethod_checks_variadic_argument_typ
 // the superPath. Without that, the error lands on the last argument rather than the bad one.
 TEST_CASE_FIXTURE(BuiltinsFixture, "call_metamethod_variadic_blames_the_offending_argument")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag _{FFlag::LuauFixCallMetamethodErrorReporting, true};
 
     CheckResult result = check(R"(
@@ -2514,6 +2513,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "call_metamethod_variadic_blames_the_offendin
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "call_metamethod_variadic_blames_each_offending_argument")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag _{FFlag::LuauFixCallMetamethodErrorReporting, true};
 
     CheckResult result = check(R"(
@@ -2839,6 +2840,8 @@ TEST_CASE_FIXTURE(Fixture, "local_function_fwd_decl_doesnt_crash")
 
 TEST_CASE_FIXTURE(Fixture, "bidirectional_checking_of_callback_property")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         function print(x: number) end
 
@@ -2910,6 +2913,8 @@ TEST_CASE_FIXTURE(Fixture, "pass_table_literal_to_function_expecting_optional_pr
 
 TEST_CASE_FIXTURE(Fixture, "function_inference_notes_generic_return")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
     ScopedFastFlag _{FFlag::LuauIterativeTypeSearcher, true};
@@ -2938,6 +2943,8 @@ TEST_CASE_FIXTURE(Fixture, "function_inference_notes_generic_return")
 
 TEST_CASE_FIXTURE(Fixture, "dont_infer_overloaded_functions")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag _{FFlag::LuauIterativeTypeSearcher, true};
 
     CheckResult result = check(R"(
@@ -3346,6 +3353,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "string_format_pack_variadic")
 
 TEST_CASE_FIXTURE(Fixture, "table_annotated_explicit_self")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     CheckResult results = check(R"(
@@ -3392,6 +3401,8 @@ TEST_CASE_FIXTURE(Fixture, "oss_1871")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "io_manager_oop_ish")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     CheckResult result = check(R"(
@@ -3426,6 +3437,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "io_manager_oop_ish")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "generic_function_statement")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     CheckResult result = check(R"(
@@ -3748,6 +3761,8 @@ TEST_CASE_FIXTURE(Fixture, "overload_selection_union_of_functions")
 
 TEST_CASE_FIXTURE(Fixture, "overload_selection_needs_to_retry")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
 
     auto results = check(R"(
@@ -4015,6 +4030,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "pcall_example")
 
 TEST_CASE_FIXTURE(ExternTypeFixture, "bidirectional_function_statement_inference_with_extern")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         type HasClass = { f: (ClassWithGenericMethod) -> () }
         local t = {} :: HasClass
@@ -4858,6 +4875,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2623_double_negate_string")
 
 TEST_CASE_FIXTURE(Fixture, "oss_2670_generic_leaking_indexer_1")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
     ScopedFastFlag _{FFlag::LuauDoNotLeakGenericsInIndexer, true};
@@ -4881,6 +4900,8 @@ TEST_CASE_FIXTURE(Fixture, "oss_2670_generic_leaking_indexer_1")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2670_generic_leaking_indexer_2")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
     ScopedFastFlag _{FFlag::LuauDoNotLeakGenericsInIndexer, true};
@@ -5035,7 +5056,7 @@ TEST_CASE_FIXTURE(Fixture, "let_generalization_multiple_values")
 
 TEST_CASE_FIXTURE(Fixture, "let_generalization_second_layer")
 {
-    CheckResult result =check(R"(
+    CheckResult result = check(R"(
         --!strict
         local function id(x)
           return x

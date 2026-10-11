@@ -183,6 +183,8 @@ TEST_CASE_FIXTURE(Fixture, "UnionTypeIterator_with_only_cyclic_union")
  */
 TEST_CASE_FIXTURE(Fixture, "substitution_skip_failure")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     Type ftv11{FreeType{TypeLevel{}, getBuiltins()->neverType, getBuiltins()->unknownType}};
 
     TypePackVar tp24{TypePack{{&ftv11}}};
@@ -257,12 +259,7 @@ TEST_CASE_FIXTURE(Fixture, "substitution_skip_failure")
 
     ModulePtr currentModule = std::make_shared<Module>(std::make_shared<TypeArena>());
     Anyification anyification(
-        currentModule->internalTypes.get(),
-        getFrontend().globals.globalScope,
-        getBuiltins(),
-        &getFrontend().iceHandler,
-        getBuiltins()->anyType,
-        getBuiltins()->anyTypePack
+        currentModule->internalTypes.get(), getFrontend().globals.globalScope, getBuiltins(), &ice, getBuiltins()->anyType, getBuiltins()->anyTypePack
     );
     std::optional<TypeId> any = anyification.substitute(root);
 

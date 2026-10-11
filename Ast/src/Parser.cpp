@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 LUAU_FASTINTVARIABLE(LuauRecursionLimit, 1000)
@@ -24,14 +25,15 @@ LUAU_FASTFLAGVARIABLE(LuauSolverV2)
 LUAU_DYNAMIC_FASTFLAGVARIABLE(DebugLuauReportReturnTypeVariadicWithTypeSuffix, false)
 LUAU_FASTFLAGVARIABLE(LuauIntegerType2)
 LUAU_FASTFLAGVARIABLE(LuauExportValueSyntax)
-LUAU_FLAGVERSION(LuauExportValueSyntax, 4)
+LUAU_FLAGVERSION(LuauExportValueSyntax, 5)
 
 LUAU_FASTFLAGVARIABLE(DebugLuauNoInline)
 LUAU_FASTFLAGVARIABLE(DebugLuauUserDefinedClasses)
 LUAU_FASTFLAGVARIABLE(LuauAllowGlobalDeclarationToBeCalledClass)
-LUAU_FASTFLAGVARIABLE(LuauNoDuplicateBinaryPrefix)
 LUAU_FASTFLAGVARIABLE(LuauSingleTypeOptionalPackReturnsAttributeParens)
-LUAU_FASTFLAGVARIABLE(DebugLuauIfLocalSyntax)
+LUAU_FASTFLAGVARIABLE(DebugLuauParseExactTables)
+LUAU_FASTFLAGVARIABLE(LuauExperimentalIfLocalSyntax)
+LUAU_FLAGVERSION(LuauExperimentalIfLocalSyntax, 2)
 
 // Clip with DebugLuauReportReturnTypeVariadicWithTypeSuffix
 bool luau_telemetry_parsed_return_type_variadic_with_type_suffix = false;
@@ -580,9 +582,14 @@ AstStat* Parser::parseIf()
 
     nextLexeme(); // if / elseif
 
-    if (FFlag::DebugLuauIfLocalSyntax &&
-        (lexer.current().type == Lexeme::ReservedLocal || (lexer.current().type == Lexeme::Name && AstName(lexer.current().name) == "const")))
-        return parseIfLocalCondition(start);
+    if (FFlag::LuauExperimentalIfLocalSyntax)
+    {
+        if (lexer.current().type == Lexeme::ReservedLocal)
+            return parseIfLocalCondition(start);
+
+        if (lexer.current().type == Lexeme::Name && AstName(lexer.current().name) == "const" && lexer.lookahead().type == Lexeme::Name)
+            return parseIfLocalCondition(start);
+    }
 
     AstExpr* cond = parseExpr();
 
@@ -607,7 +614,7 @@ AstStat* Parser::parseIf()
 // consumed `if`/`elseif` keyword; the current lexeme is the `local`/`const` keyword.
 LUAU_NOINLINE AstStat* Parser::parseIfLocalCondition(const Location& start)
 {
-    LUAU_ASSERT(FFlag::DebugLuauIfLocalSyntax);
+    LUAU_ASSERT(FFlag::LuauExperimentalIfLocalSyntax);
 
     bool condIsConst = (lexer.current().type == Lexeme::Name && AstName(lexer.current().name) == "const");
     std::optional<Location> condKeywordLocation = lexer.current().location;
@@ -650,7 +657,13 @@ LUAU_NOINLINE AstStat* Parser::parseIfLocalCondition(const Location& start)
     return node;
 }
 
-AstStat* Parser::parseElseBody(const Location& start, const Lexeme& matchThen, AstStatBlock* thenbody, Location& end, std::optional<Location>& elseLocation)
+AstStat* Parser::parseElseBody(
+    const Location& start,
+    const Lexeme& matchThen,
+    AstStatBlock* thenbody,
+    Location& end,
+    std::optional<Location>& elseLocation
+)
 {
     AstStat* elsebody = nullptr;
     end = start;
@@ -971,22 +984,10 @@ AstExpr* Parser::parseFunctionName(bool& hasself, AstName& debugname)
     return expr;
 }
 
-AstStatClass* Parser::getMatchingClass(AstExpr* expr)
+static bool isExprLValue(AstExpr* expr)
 {
-    LUAU_ASSERT(FFlag::DebugLuauUserDefinedClasses);
-    if (AstExprGlobal* g = expr->as<AstExprGlobal>())
-    {
-        if (AstStatClass** classDecl = classesWithinModule.find(g->name))
-            return *classDecl;
-    }
-    return nullptr;
-}
-
-bool Parser::isExprLValue(AstExpr* expr)
-{
-    return (expr->is<AstExprLocal>() && !expr->as<AstExprLocal>()->local->isConst) ||
-           (expr->is<AstExprGlobal>() && !(FFlag::DebugLuauUserDefinedClasses && getMatchingClass(expr) != nullptr)) ||
-           expr->is<AstExprIndexExpr>() || expr->is<AstExprIndexName>();
+    return (expr->is<AstExprLocal>() && !expr->as<AstExprLocal>()->local->isConst) || expr->is<AstExprGlobal>() || expr->is<AstExprIndexExpr>() ||
+           expr->is<AstExprIndexName>();
 }
 
 // function funcname funcbody
@@ -1348,7 +1349,8 @@ AstStat* Parser::parseLocal(
 
         Location location{start.begin, body->location.end};
 
-        AstStatLocalFunction* node = allocator.alloc<AstStatLocalFunction>(location, var, body, isConst, isConst ? keywordPosition : Position::missing());
+        AstStatLocalFunction* node =
+            allocator.alloc<AstStatLocalFunction>(location, var, body, isConst, isConst ? keywordPosition : Position::missing());
         if (options.storeCstData)
         {
             cstNodeMap[node] = cstAttrLists != nullptr
@@ -1539,8 +1541,10 @@ LUAU_NOINLINE AstStat* Parser::parseClassStat(const Location& start, bool export
     if (!name)
         name = Name(nameError, lexer.current().location);
 
-    AstLocal* nameLocal =
-        allocator.alloc<AstLocal>(name->name, name->location, nullptr, functionStack.size() - 1, functionStack.back().loopDepth, nullptr, true);
+    // We save the locals here as part of error recovery later.
+    auto savedLocals = saveLocals();
+
+    AstLocal* nameLocal = pushLocal(Binding(*name, nullptr, {0, 0}, true));
 
     AstExpr* super = nullptr;
     if (lexer.current().type == Lexeme::Name && AstName(lexer.current().name) == "extends")
@@ -1592,14 +1596,10 @@ LUAU_NOINLINE AstStat* Parser::parseClassStat(const Location& start, bool export
                 propType = parseType();
             }
 
-            if (propName->name == "new")
-                report(propName->location, "Class properties cannot be named 'new'. Define a method named '__init' to define a constructor.");
-            else if (strncmp(propName->name.value, "__", 2) == 0)
+            if (strncmp(propName->name.value, "__", 2) == 0)
                 report(propName->location, "Class properties cannot start with '__'");
             else if (classMemberNamespace.contains(propName->name))
-            {
                 report(propName->location, "Duplicate class member '%s'", propName->name.value);
-            }
             else
             {
                 classMemberNamespace.insert(propName->name);
@@ -1644,9 +1644,7 @@ LUAU_NOINLINE AstStat* Parser::parseClassStat(const Location& start, bool export
             if (body->args.size > 0 && body->args.data[0]->name == "self" && body->args.data[0]->annotation != nullptr)
                 report(body->args.data[0]->annotation->location, "The 'self' parameter cannot have a type annotation");
 
-            if (name.name == "new")
-                report(name.location, "Class methods cannot be named 'new'.  Name it '__init' to define a constructor.");
-            else if (strncmp(name.name.value, "__", 2) == 0)
+            if (strncmp(name.name.value, "__", 2) == 0)
             {
                 if (kExplicitlyDisallowedMetamethods.count(name.name.value) > 0)
                     report(name.location, "Classes cannot define '%s' as a metamethod", name.name.value);
@@ -1694,18 +1692,19 @@ LUAU_NOINLINE AstStat* Parser::parseClassStat(const Location& start, bool export
     if (recursionCounter > 1)
         report(nameLocal->location, "Cannot declare class '%s' inside another statement or expression", nameLocal->name.value);
 
-    AstStatClass* cls = allocator.alloc<AstStatClass>(location, nameLocal, super, copy(declarations), exported, open);
+    AstStat* cls = allocator.alloc<AstStatClass>(location, nameLocal, super, copy(declarations), exported, open);
     if (classesWithinModule.contains(nameLocal->name))
     {
+        // We do not allow shadowing classes with the same name. However, we
+        // want to have a decent experience when editing classes that have
+        // the same name, so if we encounter this shadowing, we pop the local
+        // representing the class off the stack and return an error.
+        restoreLocals(savedLocals);
         return reportStatError(
-            nameLocal->location,
-            {},
-            copy({static_cast<AstStat*>(cls)}),
-            "A class named '%s' has already been declared in this module",
-            nameLocal->name.value
+            nameLocal->location, {}, copy({cls}), "A class named '%s' has already been declared in this module", nameLocal->name.value
         );
     }
-    classesWithinModule[nameLocal->name] = cls;
+    classesWithinModule.insert(nameLocal->name);
     return cls;
 }
 
@@ -2049,19 +2048,6 @@ AstExprError* Parser::reportLValueError(AstExpr* expr)
         AstExprLocal* local = expr->as<AstExprLocal>();
         return reportExprError(expr->location, copy({expr}), "Variable '%s' is constant and may not be reassigned", local->local->name.value);
     }
-    if (FFlag::DebugLuauUserDefinedClasses)
-    {
-        if (AstStatClass* classStat = getMatchingClass(expr))
-        {
-            return reportExprError(
-                expr->location,
-                copy({expr}),
-                "'%s' refers to a class and cannot be used as a variable name (defined on line %d)",
-                classStat->name->name.value,
-                classStat->location.begin.line + 1
-            );
-        }
-    }
 
     return reportExprError(expr->location, copy({expr}), "Assigned expression must be a variable or a field");
 }
@@ -2070,6 +2056,7 @@ AstExprError* Parser::reportLValueError(AstExpr* expr)
 AstStat* Parser::parseAssignment(AstExpr* initial)
 {
     if (!isExprLValue(initial))
+
         initial = FFlag::LuauExportValueSyntax
                       ? reportLValueError(initial)
                       : reportExprError(initial->location, copy({initial}), "Assigned expression must be a variable or a field");
@@ -2802,11 +2789,21 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
     expectAndConsume('{', "table type");
 
     bool isArray = false;
+    // When the flag is set, tables are exact by default unless ... is present at the end.
+    bool isExact = FFlag::DebugLuauParseExactTables;
 
     while (lexer.current().type != '}')
     {
         AstTableAccess access = AstTableAccess::ReadWrite;
         std::optional<Location> accessLocation;
+
+        if (FFlag::DebugLuauParseExactTables && lexer.current().type == Lexeme::Dot3)
+        {
+            nextLexeme();
+            isExact = false;
+            // ... is always last.
+            break;
+        }
 
         if (lexer.current().type == Lexeme::Name && lexer.lookahead().type != ':')
         {
@@ -2914,6 +2911,17 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
             Location nullTypeLocation = Location(start.begin, 0);
             AstType* index = allocator.alloc<AstTypeReference>(nullTypeLocation, std::nullopt, nameNumber, std::nullopt, nullTypeLocation);
             indexer = allocator.alloc<AstTableIndexer>(AstTableIndexer{index, type, type->location, access, accessLocation});
+
+            if (FFlag::DebugLuauParseExactTables)
+            {
+                if (lexer.current().type == ',' && lexer.lookahead().type == Lexeme::Dot3)
+                {
+                    nextLexeme();
+                    nextLexeme();
+                    isExact = false;
+                }
+            }
+
             break;
         }
         else
@@ -2961,7 +2969,7 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
     if (!expectMatchAndConsume('}', matchBrace, /* searchForMissing = */ true))
         end = lexer.previousLocation();
 
-    AstTypeTable* node = allocator.alloc<AstTypeTable>(Location(start, end), copy(props), indexer);
+    AstTypeTable* node = allocator.alloc<AstTypeTable>(Location(start, end), copy(props), indexer, isExact);
     if (options.storeCstData)
         cstNodeMap[node] = allocator.alloc<CstTypeTable>(copy(cstItems), isArray);
     return node;
@@ -3922,13 +3930,10 @@ static ConstantNumberParseResult parseInteger(double& result, const char* data, 
 {
     LUAU_ASSERT(base == 2 || base == 16);
 
-    if (FFlag::LuauNoDuplicateBinaryPrefix)
-    {
-        // Some libc implementations accept an optional 0b prefix for base-2 parsing.
-        // Binary literals have already had their leading 0b stripped by us.
-        if (base == 2 && data[0] == '0' && (data[1] == 'b' || data[1] == 'B'))
-            return ConstantNumberParseResult::Malformed;
-    }
+    // Some libc implementations accept an optional 0b prefix for base-2 parsing.
+    // Binary literals have already had their leading 0b stripped by us.
+    if (base == 2 && data[0] == '0' && (data[1] == 'b' || data[1] == 'B'))
+        return ConstantNumberParseResult::Malformed;
 
     char* end = nullptr;
     unsigned long long value = strtoull(data, &end, base);
@@ -3981,11 +3986,8 @@ static ConstantNumberParseResult parseInteger64(int64_t& result, const char* dat
     }
     else
     {
-        if (FFlag::LuauNoDuplicateBinaryPrefix)
-        {
-            if (base == 2 && data[0] == '0' && (data[1] == 'b' || data[1] == 'B'))
-                return ConstantNumberParseResult::Malformed;
-        }
+        if (base == 2 && data[0] == '0' && (data[1] == 'b' || data[1] == 'B'))
+            return ConstantNumberParseResult::Malformed;
 
         // hex and binary literals represent bit patterns covering the full uint64 range
         unsigned long long u = strtoull(data, &end, base);
@@ -4216,7 +4218,7 @@ AstExpr* Parser::parseFunctionArgs(AstExpr* func, bool self)
         bool closingParenFound = expectMatchAndConsume(')', matchParen);
 
         AstExprCall* node = allocator.alloc<AstExprCall>(
-            Location(func->location, end), func, copy(args), self, AstArray<AstTypeOrPack>{}, Location(argStart, argEnd)
+            Location(func->location, end), func, copy(args), self, /* tableCall */ false, AstArray<AstTypeOrPack>{}, Location(argStart, argEnd)
         );
         if (options.storeCstData)
             cstNodeMap[node] = allocator.alloc<CstExprCall>(
@@ -4231,7 +4233,13 @@ AstExpr* Parser::parseFunctionArgs(AstExpr* func, bool self)
         Position argEnd = lexer.previousLocation().end;
 
         AstExprCall* node = allocator.alloc<AstExprCall>(
-            Location(func->location, expr->location), func, copy(&expr, 1), self, AstArray<AstTypeOrPack>{}, Location(argStart, argEnd)
+            Location(func->location, expr->location),
+            func,
+            copy(&expr, 1),
+            self,
+            /* tableCall */ true,
+            AstArray<AstTypeOrPack>{},
+            Location(argStart, argEnd)
         );
         if (options.storeCstData)
             cstNodeMap[node] = allocator.alloc<CstExprCall>(Position::missing(), Position::missing(), AstArray<Position>{nullptr, 0});
@@ -4243,7 +4251,7 @@ AstExpr* Parser::parseFunctionArgs(AstExpr* func, bool self)
         AstExpr* expr = parseString();
 
         AstExprCall* node = allocator.alloc<AstExprCall>(
-            Location(func->location, expr->location), func, copy(&expr, 1), self, AstArray<AstTypeOrPack>{}, argLocation
+            Location(func->location, expr->location), func, copy(&expr, 1), self, /* tableCall */ false, AstArray<AstTypeOrPack>{}, argLocation
         );
         if (options.storeCstData)
             cstNodeMap[node] = allocator.alloc<CstExprCall>(Position::missing(), Position::missing(), AstArray<Position>{nullptr, 0});
@@ -4415,9 +4423,14 @@ AstExpr* Parser::parseIfElseExpr()
 
     nextLexeme(); // skip if / elseif
 
-    if (FFlag::DebugLuauIfLocalSyntax &&
-        (lexer.current().type == Lexeme::ReservedLocal || (lexer.current().type == Lexeme::Name && AstName(lexer.current().name) == "const")))
-        return parseIfElseExprLocalCondition(start);
+    if (FFlag::LuauExperimentalIfLocalSyntax)
+    {
+        if (lexer.current().type == Lexeme::ReservedLocal)
+            return parseIfElseExprLocalCondition(start);
+
+        if (lexer.current().type == Lexeme::Name && AstName(lexer.current().name) == "const" && lexer.lookahead().type == Lexeme::Name)
+            return parseIfElseExprLocalCondition(start);
+    }
 
     AstExpr* condition = parseExpr();
 
@@ -4446,7 +4459,7 @@ AstExpr* Parser::parseIfElseExpr()
 // consumed `if`/`elseif` keyword; the current lexeme is the `local`/`const` keyword.
 LUAU_NOINLINE AstExpr* Parser::parseIfElseExprLocalCondition(const Location& start)
 {
-    LUAU_ASSERT(FFlag::DebugLuauIfLocalSyntax);
+    LUAU_ASSERT(FFlag::LuauExperimentalIfLocalSyntax);
 
     bool condIsConst = (lexer.current().type == Lexeme::Name && AstName(lexer.current().name) == "const");
     std::optional<Location> condKeywordLocation = lexer.current().location;

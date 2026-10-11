@@ -10,11 +10,14 @@
 
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
 LUAU_FASTFLAG(DebugLuauAssertOnForcedConstraint)
-LUAU_FASTFLAG(DebugLuauIfLocalSyntax)
-LUAU_FASTFLAG(DebugLuauIfLocalAnalysis)
+LUAU_FASTFLAG(LuauDecomposeIntersectionOfFreeType)
+LUAU_FASTFLAG(LuauDoesCallErrorUnwrapsGroups)
+LUAU_FASTFLAG(LuauExperimentalIfLocalSyntax)
+LUAU_FASTFLAG(LuauExperimentalIfLocalAnalysis)
 LUAU_FASTFLAG(DebugLuauCFG)
 LUAU_FASTFLAG(LuauCannotAddIndexerToTablePrimitive)
 LUAU_FASTFLAG(LuauIterativeTypeSearcher)
+LUAU_FASTFLAG(LuauRefineNotNilWaitsForBlockedTarget)
 
 using namespace Luau;
 
@@ -376,6 +379,109 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "typeguard_in_assert_position")
         CHECK("<T>(T) -> number" == toString(requireType("f")));
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "assert_call_refines_return_type_through_grouping")
+{
+    ScopedFastFlag sff{FFlag::LuauDoesCallErrorUnwrapsGroups, true};
+
+    CheckResult result = check(R"(
+        local function ungrouped(x: number?)
+            assert(x)
+            return x
+        end
+
+        local function assertnotnil(x: number?)
+            (assert)(x)
+            return x
+        end
+
+        local function nested(x: number?)
+            ((assert))(x)
+            return x
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK_EQ("(number?) -> number", toString(requireType("ungrouped")));
+    CHECK_EQ("(number?) -> number", toString(requireType("assertnotnil")));
+    CHECK_EQ("(number?) -> number", toString(requireType("nested")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "error_call_refines_return_type_through_grouping")
+{
+    ScopedFastFlag sff{FFlag::LuauDoesCallErrorUnwrapsGroups, true};
+
+    CheckResult result = check(R"(
+        local function ungrouped(x: number?)
+            if not x then
+                error(x)
+            end
+            return x
+        end
+
+        local function erroronnil(x: number?)
+            if not x then
+                (error)(x)
+            end
+            return x
+        end
+
+        local function nested(x: number?)
+            if not x then
+                ((error))(x)
+            end
+            return x
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK_EQ("(number?) -> number", toString(requireType("ungrouped")));
+    CHECK_EQ("(number?) -> number", toString(requireType("erroronnil")));
+    CHECK_EQ("(number?) -> number", toString(requireType("nested")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "grouped_calls_to_shadowed_builtins_do_not_refine_return_types")
+{
+    ScopedFastFlag sff{FFlag::LuauDoesCallErrorUnwrapsGroups, true};
+
+    CheckResult result = check(R"(
+        local assert = function(_: number?) end
+        local error = function(_: number?) end
+
+        local function assertnotnil(x: number?)
+            (assert)(x)
+            return x
+        end
+
+        local function nestedassert(x: number?)
+            ((assert))(x)
+            return x
+        end
+
+        local function erroronnil(x: number?)
+            if not x then
+                (error)(x)
+            end
+            return x
+        end
+
+        local function nestederror(x: number?)
+            if not x then
+                ((error))(x)
+            end
+            return x
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK_EQ("(number?) -> number?", toString(requireType("assertnotnil")));
+    CHECK_EQ("(number?) -> number?", toString(requireType("nestedassert")));
+    CHECK_EQ("(number?) -> number?", toString(requireType("erroronnil")));
+    CHECK_EQ("(number?) -> number?", toString(requireType("nestederror")));
+}
+
 TEST_CASE_FIXTURE(BuiltinsFixture, "refine_unknown_to_table_then_test_a_prop")
 {
     CheckResult result = check(R"(
@@ -407,6 +513,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "refine_unknown_to_table_then_test_a_prop")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "indexing_unknown_refined_to_table_reports_missing_indexer")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
     ScopedFastFlag fix{FFlag::LuauCannotAddIndexerToTablePrimitive, true};
 
@@ -746,7 +854,7 @@ TEST_CASE_FIXTURE(Fixture, "free_type_is_equal_to_an_lvalue")
         // depending on which tests are run and in which order. I'm not sure
         // where the nondeterminism is coming from.
         TypeArena arena;
-        UnifierSharedState state{NotNull{&getFrontend().iceHandler}};
+        UnifierSharedState state{NotNull{&ice}};
         Normalizer normalizer{&arena, getBuiltins(), NotNull{&state}, SolverMode::New};
         auto a = normalizer.normalize(requireTypeAtPosition({3, 36}));
         CHECK(toString(normalizer.typeFromNormal(*a)) == "string?"); // a == b
@@ -1081,6 +1189,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "either_number_or_string")
 
 TEST_CASE_FIXTURE(Fixture, "not_t_or_some_prop_of_t")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         local function f(t: {x: boolean}?)
             if not t or t.x then
@@ -1502,7 +1612,7 @@ TEST_CASE_FIXTURE(RefinementExternTypeFixture, "typeguard_cast_free_table_to_vec
 {
     // CLI-115286 - Refining via type(x) == 'vector' does not work in the new solver
     DOES_NOT_PASS_NEW_SOLVER_GUARD();
-    getFrontend().setLuauSolverMode(!FFlag::DebugLuauForceOldSolver ? SolverMode::New : SolverMode::Old);
+
     CheckResult result = check(R"(
         local function f(vec)
             local X, Y, Z = vec.X, vec.Y, vec.Z
@@ -1693,6 +1803,8 @@ TEST_CASE_FIXTURE(RefinementExternTypeFixture, "refine_param_of_type_folder_or_p
 
 TEST_CASE_FIXTURE(RefinementExternTypeFixture, "isa_type_refinement_must_be_known_ahead_of_time")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag _{FFlag::LuauIterativeTypeSearcher, true};
 
     CheckResult result = check(R"(
@@ -1725,6 +1837,8 @@ TEST_CASE_FIXTURE(RefinementExternTypeFixture, "isa_type_refinement_must_be_know
 
 TEST_CASE_FIXTURE(RefinementExternTypeFixture, "asserting_optional_properties_should_not_refine_extern_types_to_never")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
 
     CheckResult result = check(R"(
         local weld: WeldConstraint = nil :: any
@@ -1967,6 +2081,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "refine_unknown_to_table_then_take_the_length
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "refine_unknown_to_table_then_clone_it")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         local function f(x: unknown)
             if typeof(x) == "table" then
@@ -2735,6 +2851,8 @@ TEST_CASE_FIXTURE(Fixture, "oss_1687_equality_shouldnt_leak_nil")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "oss_1451")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
 
     LUAU_REQUIRE_NO_ERRORS(check(R"(
@@ -2789,6 +2907,8 @@ TEST_CASE_FIXTURE(RefinementExternTypeFixture, "cli_140033_refine_union_of_exter
 
 TEST_CASE_FIXTURE(RefinementExternTypeFixture, "cannot_call_a_function_union")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     CheckResult result = check(R"(
@@ -2920,6 +3040,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "refine_by_no_refine_should_always_reduce")
 
 TEST_CASE_FIXTURE(Fixture, "table_name_index_without_prior_assignment_from_branch")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     // The important part of this test case is:
@@ -2959,6 +3081,8 @@ TEST_CASE_FIXTURE(Fixture, "cli_120460_table_access_on_phi_node")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "refinements_from_and_should_not_refine_to_never")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sffs[] = {
         {FFlag::DebugLuauForceOldSolver, false},
     };
@@ -2991,9 +3115,13 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "refinements_from_and_should_not_refine_to_ne
 
 TEST_CASE_FIXTURE(Fixture, "force_simplify_constraint_doesnt_drop_blocked_type")
 {
-    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
-    ScopedFastFlag _{FFlag::LuauIterativeTypeSearcher, true};
+    ScopedFastFlag sffs[]{
+        {FFlag::LuauIterativeTypeSearcher, true},
+        {FFlag::LuauDecomposeIntersectionOfFreeType, true},
+        {FFlag::DebugLuauAssertOnForcedConstraint, true},
+    };
 
     CheckResult results = check(R"(
         local function track(instance): boolean
@@ -3007,14 +3135,6 @@ TEST_CASE_FIXTURE(Fixture, "force_simplify_constraint_doesnt_drop_blocked_type")
     )");
 
     ignoreMissingAnnotations(results);
-
-    // NOTE: This should have *no* errors but due to a constraint cycle
-    // between the `and` type function and the subtype constraint of the
-    // return type, we end up sometimes being unable to reduce this properly.
-
-    // This flip-flops as the constraint forcing _sometimes_ means we correctly
-    // claim a lack of errors.
-
     LUAU_REQUIRE_NO_ERRORS(results);
 }
 
@@ -3054,6 +3174,8 @@ end
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "inline_if_conditional_context")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     LUAU_REQUIRE_NO_ERRORS(check(R"(
         --!strict
 
@@ -3122,6 +3244,29 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "assert_and_typeof_refinement_context")
 
         if typeof(x) == "table" then
             assert(typeof(x.transform) == "function")
+        end
+    )"));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "grouped_assert_and_typeof_refinement_context")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauDoesCallErrorUnwrapsGroups, true},
+    };
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        --!strict
+
+        local x = {} :: unknown
+        local y = {} :: unknown
+
+        if typeof(x) == "table" then
+            (assert)(typeof(x.transform) == "function")
+        end
+
+        if typeof(y) == "table" then
+            ((assert))(typeof(y.transform) == "function")
         end
     )"));
 }
@@ -3281,6 +3426,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "cli_181549_refined_string_should_be_subtype_
 
 TEST_CASE_FIXTURE(Fixture, "cli_184413_refinement_of_union_of_read_types_is_read_type")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     LUAU_REQUIRE_NO_ERRORS(check(R"(
         export type States = "Closed" | "Closing" | "Opening" | "Open"
         export type MyType<A = any> = {
@@ -3377,17 +3524,36 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "unification_with_refinements_doesnt_impact_f
 
         table.sort(keys, sorter)
     )");
+
     ignoreMissingAnnotations(result);
     LUAU_REQUIRE_NO_ERRORS(result);
+}
 
-    CHECK_EQ("(unknown, unknown) -> boolean", toString(requireType("sorter")));
+TEST_CASE_FIXTURE(Fixture, "unification_inferring_never_for_refined_param")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    ScopedFastFlag _{FFlag::LuauDecomposeIntersectionOfFreeType, true};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        local function __remove(__: number?) end
+
+        function __removeItem(self, itemId: number)
+            local index = self.getItem(itemId)
+            if index then
+               __remove(index)
+            end
+        end
+    )"));
+
+    CHECK_EQ("({ read getItem: (number) -> ((false | number)?, ...unknown) }, number) -> ()", toString(requireType("__removeItem")));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_narrows_to_truthy")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3404,8 +3570,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_narrows_to_truthy")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_basic_typecheck")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3422,8 +3588,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_basic_typecheck")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_binding_not_visible_after_block")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3440,8 +3606,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_binding_not_visible_after_block")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_refines_unannotated_to_truthy")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3460,8 +3626,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_refines_unannotated_to_truthy")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_refines_annotated_type")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3481,8 +3647,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_refines_annotated_type")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_const_narrows_to_truthy")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3500,8 +3666,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_const_narrows_to_truthy")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_binding_not_visible_in_else")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3519,8 +3685,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_binding_not_visible_in_else")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_binding_not_visible_in_elseif_condition")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3538,8 +3704,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_binding_not_visible_in_elseif_condi
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_elseif_independent_bindings_are_narrowed")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3560,8 +3726,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_elseif_independent_bindings_are_nar
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_narrows_nested_table_field")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3579,8 +3745,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_narrows_nested_table_field")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_uses_annotated_type")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3600,8 +3766,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_uses_annotated_type")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_table_annotation_mismatch")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3621,8 +3787,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_table_annotation_mismatch")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_visits_malformed_annotation")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3642,8 +3808,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_visits_malformed_annotation")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_visits_malformed_annotation_qualified")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     fileResolver.source["game/Foo"] = R"(
@@ -3669,8 +3835,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_visits_malformed_annotation_qualifi
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_bidirectional_table_annotation")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3685,8 +3851,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_bidirectional_table_annotation")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_bidirectional_table_annotation_mismatch")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3701,8 +3867,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_bidirectional_table_annotation_mism
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_narrows_to_truthy")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3718,8 +3884,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_narrows_to_truthy")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_const_expression_narrows_to_truthy")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3735,8 +3901,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_const_expression_narrows_to_truthy")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_binding_not_visible_in_else")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3752,8 +3918,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_binding_not_visible_in_e
 TEST_CASE_FIXTURE(BuiltinsFixture, "elseif_local_expression_independent_bindings_are_narrowed")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3770,8 +3936,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "elseif_local_expression_independent_bindings
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_uses_annotated_type")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3790,8 +3956,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_uses_annotated_type")
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_visits_malformed_annotation")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3809,8 +3975,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_visits_malformed_annotat
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_bidirectional_table_annotation")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3823,8 +3989,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_bidirectional_table_anno
 TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_bidirectional_table_annotation_mismatch")
 {
     ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauIfLocalSyntax, true},
-        {FFlag::DebugLuauIfLocalAnalysis, true},
+        {FFlag::LuauExperimentalIfLocalSyntax, true},
+        {FFlag::LuauExperimentalIfLocalAnalysis, true},
     };
 
     CheckResult result = check(R"(
@@ -3832,6 +3998,37 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "if_local_expression_bidirectional_table_anno
     )");
 
     LUAU_REQUIRE_ERROR(result, TypeMismatch);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "refine_not_nil_waits_for_blocked_target")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    ScopedFastFlag sffs[] = {
+        {FFlag::LuauRefineNotNilWaitsForBlockedTarget, true},
+        {FFlag::DebugLuauAssertOnForcedConstraint, true},
+    };
+
+    CheckResult result = check(R"(
+        local M = {}
+        function M.id<T>(v: T): T
+            return v
+        end
+
+        local s = M.id({} :: { a: string?, b: string? })
+        local w = if true then s.a else nil
+        local u = if true then s.a or s.b else nil
+        if w ~= nil then
+            local x = w
+        end
+        if u ~= nil then
+            local y = u
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("string", toString(requireTypeAtPosition({10, 22})));
+    CHECK_EQ("string", toString(requireTypeAtPosition({13, 22})));
 }
 
 TEST_SUITE_END();

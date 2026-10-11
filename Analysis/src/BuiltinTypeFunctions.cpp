@@ -25,7 +25,7 @@ LUAU_DYNAMIC_FASTINTVARIABLE(LuauStepRefineRecursionLimit, 64)
 LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
 LUAU_FASTFLAG(LuauCyclicRequireTypeInference)
 LUAU_FASTFLAGVARIABLE(LuauKeyofLexicographicOrdering)
-LUAU_FASTFLAGVARIABLE(LuauDontBlockRefinementUnconditionally)
+LUAU_FASTFLAGVARIABLE(LuauRefineNotNilWaitsForBlockedTarget)
 LUAU_FASTFLAGVARIABLE(LuauSetmetatableOverrides)
 LUAU_FLAGVERSION(LuauSetmetatableOverrides, 2)
 LUAU_FASTFLAG(LuauTraverseScopeToFunction)
@@ -1275,17 +1275,6 @@ TypeFunctionReductionResult<TypeId> refineTypeFunction(
         }
     }
 
-    if (!FFlag::LuauDontBlockRefinementUnconditionally)
-    {
-        // If we have a blocked type in the target, we *could* potentially
-        // refine it, but more likely we end up with some type explosion in
-        // normalization.
-        FindRefinementBlockers frb;
-        frb.traverse(targetTy);
-        if (!frb.found.empty())
-            return {std::nullopt, Reduction::MaybeOk, {frb.found.begin(), frb.found.end()}, {}};
-    }
-
     int stepRefineCount = 0;
 
     // Refine a target type and a discriminant one at a time.
@@ -1311,6 +1300,29 @@ TypeFunctionReductionResult<TypeId> refineTypeFunction(
             if (auto primitive = get<PrimitiveType>(follow(negation->ty)); primitive && primitive->type == PrimitiveType::NilType)
             {
                 SimplifyResult result = simplifyIntersection(ctx->builtins, ctx->arena, target, discriminant);
+
+                if (FFlag::LuauRefineNotNilWaitsForBlockedTarget)
+                {
+                    std::vector<TypeId> blocked;
+                    for (TypeId ty : result.blockedTypes)
+                    {
+                        if (is<BlockedType, PendingExpansionType>(follow(ty)))
+                            blocked.push_back(ty);
+                    }
+
+                    if (auto ut = get<UnionType>(follow(target)))
+                    {
+                        for (TypeId option : ut)
+                        {
+                            if (isBlockedOrUnsolvedType(follow(option)))
+                                blocked.push_back(option);
+                        }
+                    }
+
+                    if (!blocked.empty())
+                        return {nullptr, std::move(blocked)};
+                }
+
                 return {result.result, {}};
             }
         }
@@ -1353,21 +1365,18 @@ TypeFunctionReductionResult<TypeId> refineTypeFunction(
         if (!normIntersection || !normType)
             return {nullptr, {}};
 
-        if (FFlag::LuauDontBlockRefinementUnconditionally)
+        std::vector<TypeId> blockedTypes;
+
+        // Iteration through an unordered map. Not good!
+        for (const auto& [ty, _] : normIntersection->tyvars)
         {
-            std::vector<TypeId> blockedTypes;
-
-            // Iteration through an unordered map. Not good!
-            for (const auto& [ty, _] : normIntersection->tyvars)
-            {
-                auto followed = follow(ty);
-                if (is<BlockedType>(followed))
-                    blockedTypes.emplace_back(followed);
-            }
-
-            if (!blockedTypes.empty())
-                return {nullptr, std::move(blockedTypes)};
+            auto followed = follow(ty);
+            if (is<BlockedType>(followed))
+                blockedTypes.emplace_back(followed);
         }
+
+        if (!blockedTypes.empty())
+            return {nullptr, std::move(blockedTypes)};
 
         TypeId resultTy = ctx->normalizer->typeFromNormal(*normIntersection);
         // include the error type if the target type is error-suppressing and the intersection we computed is not
@@ -1685,7 +1694,13 @@ namespace
  * `isRaw` parameter indicates whether or not we should follow __index metamethods
  * returns `false` if `result` should be ignored because the answer is "all strings"
  */
-bool computeKeysOf(TypeId ty, Set<std::optional<std::string>>& result, DenseHashSet<TypeId>& seen, bool isRaw, NotNull<TypeFunctionContext> ctx)
+bool computeKeysOf(
+    TypeId ty,
+    DenseHashSet<std::optional<std::string>>& result,
+    DenseHashSet<TypeId>& seen,
+    bool isRaw,
+    NotNull<TypeFunctionContext> ctx
+)
 {
 
     // if the type is the top table type, the answer is just "all strings"
@@ -1796,7 +1811,7 @@ TypeFunctionReductionResult<TypeId> keyofFunctionImpl(
 
     // We're going to collect the keys in here, and we use optional strings
     // so that we can differentiate between the empty string and _no_ string.
-    Set<std::optional<std::string>> keys;
+    DenseHashSet<std::optional<std::string>> keys;
 
     // computing the keys for extern types
     if (normTy->hasExternTypes())
@@ -1819,18 +1834,22 @@ TypeFunctionReductionResult<TypeId> keyofFunctionImpl(
         {
             seen.clear(); // we'll reuse the same seen set
 
-            Set<std::optional<std::string>> localKeys;
+            DenseHashSet<std::optional<std::string>> localKeys;
 
             // we can skip to the next class if this one is a top type
             if (!computeKeysOf(*externTypeIter, localKeys, seen, isRaw, ctx))
                 continue;
 
+            std::vector<std::optional<std::string>> toDelete;
             for (auto& key : keys)
             {
                 // remove any keys that are not present in each class
                 if (!localKeys.contains(key))
-                    keys.erase(key);
+                    toDelete.emplace_back(key);
             }
+
+            for (auto& k : toDelete)
+                keys.erase(k);
         }
     }
 
@@ -1854,18 +1873,22 @@ TypeFunctionReductionResult<TypeId> keyofFunctionImpl(
         {
             seen.clear(); // we'll reuse the same seen set
 
-            Set<std::optional<std::string>> localKeys;
+            DenseHashSet<std::optional<std::string>> localKeys;
 
             // we can skip to the next table if this one is the top table type
             if (!computeKeysOf(*tablesIter, localKeys, seen, isRaw, ctx))
                 continue;
 
+            std::vector<std::optional<std::string>> toDelete;
             for (auto& key : keys)
             {
                 // remove any keys that are not present in each table
                 if (!localKeys.contains(key))
                     keys.erase(key);
             }
+
+            for (auto& k : toDelete)
+                keys.erase(k);
         }
     }
 
@@ -1884,8 +1907,8 @@ TypeFunctionReductionResult<TypeId> keyofFunctionImpl(
 
         for (const auto& key : keys)
         {
-             if (key)
-                  sortedKeys.emplace_back(*key);
+            if (key)
+                sortedKeys.emplace_back(*key);
         }
 
 

@@ -25,10 +25,11 @@ LUAU_FASTINT(LuauParseErrorLimit)
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
 LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
 LUAU_FASTFLAG(LuauAllowGlobalDeclarationToBeCalledClass)
-LUAU_FASTFLAG(LuauFragmentACEnableTypeFunctionEvaluation)
 LUAU_FASTFLAG(LuauFragmentACLocalAutocompleteFix)
-LUAU_FASTFLAG(DebugLuauIfLocalSyntax)
-LUAU_FASTFLAG(DebugLuauIfLocalAnalysis)
+LUAU_FASTFLAG(LuauAutocompleteIfSlurpsCond)
+LUAU_FASTFLAG(LuauExperimentalIfLocalSyntax)
+LUAU_FASTFLAG(LuauExperimentalIfLocalAnalysis)
+LUAU_FASTFLAG(LuauRefactorAutocompleteAncestry)
 
 static std::optional<AutocompleteEntryMap> nullCallback(std::string tag, std::optional<const ExternType*> ptr, std::optional<std::string> contents)
 {
@@ -1670,6 +1671,8 @@ TEST_SUITE_BEGIN("FragmentAutocompleteTests");
 
 TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "multiple_fragment_autocomplete")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ToStringOptions opt;
     opt.exhaustive = true;
     opt.exhaustive = true;
@@ -3090,6 +3093,8 @@ end)
 
 TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "fragment_autocomplete_ensures_memory_isolation")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ToStringOptions opt;
     opt.exhaustive = true;
     opt.exhaustive = true;
@@ -4918,6 +4923,49 @@ TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "fragment_autocomplete_string_sin
     );
 }
 
+TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "fragment_autocomplete_tagged_union_discriminant_comparison")
+{
+    ScopedFastFlag sff{FFlag::LuauAutocompleteIfSlurpsCond, true};
+
+    const std::string source = R"(
+type Success = {Code: "Success", Success: true, Data: any}
+type Lock = {Code: "Locked", Success: false, Lock: string}
+type Error = {Code: "Error", Success: false, Message: string}
+
+local value = {} :: Success | Lock | Error
+
+if value.Code == "" then
+
+end
+)";
+
+    const std::string updated = R"(
+type Success = {Code: "Success", Success: true, Data: any}
+type Lock = {Code: "Locked", Success: false, Lock: string}
+type Error = {Code: "Error", Success: false, Message: string}
+
+local value = {} :: Success | Lock | Error
+
+if value.Code == "@1" then
+
+end
+)";
+
+    autocompleteFragmentInBothSolvers(
+        source,
+        updated,
+        '1',
+        [](FragmentAutocompleteStatusResult& fragment)
+        {
+            REQUIRE(fragment.result);
+            CHECK_EQ(fragment.result->acResults.context, AutocompleteContext::String);
+            CHECK(fragment.result->acResults.entryMap.count("Success"));
+            CHECK(fragment.result->acResults.entryMap.count("Locked"));
+            CHECK(fragment.result->acResults.entryMap.count("Error"));
+        }
+    );
+}
+
 TEST_CASE_FIXTURE(FragmentAutocompleteBuiltinsFixture, "fragment_autocomplete_table_insert")
 {
     std::string src = R"(
@@ -5245,14 +5293,14 @@ TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "class_instance_dot_property_from
 class Bar
     public value: number
 end
-local bar = Bar.new { value = 1 }
+local bar = Bar { value = 1 }
 )";
 
     const std::string dest = R"(--!strict
 class Bar
     public value: number
 end
-local bar = Bar.new { value = 1 }
+local bar = Bar { value = 1 }
 bar.@1
 )";
 
@@ -5279,7 +5327,7 @@ class Bar
     function doThing(self)
     end
 end
-local bar = Bar.new { value = 1 }
+local bar = Bar { value = 1 }
 )";
 
     const std::string dest = R"(--!strict
@@ -5288,7 +5336,7 @@ class Bar
     function doThing(self)
     end
 end
-local bar = Bar.new { value = 1 }
+local bar = Bar { value = 1 }
 bar.@1
 )";
 
@@ -5315,7 +5363,7 @@ class Point
     public y: number
     public z: number
 end
-local p = Point.new { x = 0, y = 0, z = 0 }
+local p = Point { x = 0, y = 0, z = 0 }
 )";
 
     const std::string dest = R"(--!strict
@@ -5324,7 +5372,7 @@ class Point
     public y: number
     public z: number
 end
-local p = Point.new { x = 0, y = 0, z = 0 }
+local p = Point { x = 0, y = 0, z = 0 }
 p.@1
 )";
 
@@ -5570,14 +5618,12 @@ TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "fragment_ac_on_nonexistent_table
 
 TEST_CASE_FIXTURE(FragmentAutocompleteBuiltinsFixture, "fragment_autocomplete_type_function_string_singleton_union")
 {
-    ScopedFastFlag sff{FFlag::LuauFragmentACEnableTypeFunctionEvaluation, true};
-
     const std::string source = R"(--!strict
 type function test(ty: type)
     return types.unionof(types.singleton("test"), types.singleton("test2"))
 end
 
-local a: test<number> = 
+local a: test<number> =
 )";
 
     const std::string dest = R"(--!strict
@@ -5606,7 +5652,7 @@ local a: test<number> = "@1"
 
 TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "if_local_optional_binding_member_completion_in_then_body")
 {
-    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
 
     const std::string source = R"(
 type Test = {name: string, age: number}
@@ -5642,7 +5688,7 @@ end
 
 TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "if_local_optional_binding_is_in_scope_in_then_body")
 {
-    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
 
     const std::string source = R"(
 type Test = {name: string, age: number}
@@ -5677,7 +5723,7 @@ end
 
 TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "if_local_and_elseif_local_bindings_are_scoped_to_their_own_branch")
 {
-    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
 
     const std::string source = R"(
 type Test = {name: string, age: number}
@@ -5729,7 +5775,7 @@ end
 
 TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "elseif_local_binding_offers_member_completion")
 {
-    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
 
     const std::string source = R"(
 type Test = {name: string, age: number}
@@ -5767,7 +5813,7 @@ end
 
 TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "nested_if_local_bindings_are_both_in_scope")
 {
-    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
 
     const std::string source = R"(
 type Test = {name: string, age: number}
@@ -5807,7 +5853,7 @@ end
 
 TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "if_local_binding_is_not_in_scope_in_else_branch")
 {
-    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
 
     const std::string source = R"(
 type Test = {name: string, age: number}
@@ -5844,7 +5890,7 @@ end
 
 TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "if_local_binding_is_not_in_scope_after_if_statement")
 {
-    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
 
     const std::string source = R"(
 type Test = {name: string, age: number}
@@ -5879,7 +5925,7 @@ end
 
 TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "if_const_binding_offers_member_completion")
 {
-    ScopedFastFlag sffs[] = {{FFlag::DebugLuauIfLocalSyntax, true}, {FFlag::DebugLuauIfLocalAnalysis, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauExperimentalIfLocalSyntax, true}, {FFlag::LuauExperimentalIfLocalAnalysis, true}};
 
     const std::string source = R"(
 type Test = {name: string, age: number}
@@ -5909,6 +5955,61 @@ end
             REQUIRE(fragment.result);
             CHECK(fragment.result->acResults.entryMap.count("name"));
             CHECK(fragment.result->acResults.entryMap.count("age"));
+        }
+    );
+}
+
+TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "fragment_autocomplete_function_statement_with_index_1")
+{
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
+
+    const std::string source = R"(
+local tbl: { onHeartbeat: (number) -> (), onSimulate: (number) -> (), everyFrame: () -> () } = {}
+)";
+
+    const std::string updated = R"(
+local tbl: { onHeartbeat: (number) -> (), onSimulate: (number) -> (), everyFrame: () -> () } = {}
+
+function tbl.on@1
+)";
+
+    autocompleteFragmentInNewSolver(
+        source,
+        updated,
+        '1',
+        [](FragmentAutocompleteStatusResult& fragment)
+        {
+            REQUIRE(fragment.result);
+            CHECK(fragment.result->acResults.entryMap.count("onHeartbeat"));
+            CHECK(fragment.result->acResults.entryMap.count("onSimulate"));
+            CHECK(fragment.result->acResults.entryMap.count("everyFrame"));
+            CHECK(fragment.result->acResults.entryMap["everyFrame"].typeCorrect == TypeCorrectKind::None);
+        }
+    );
+}
+
+TEST_CASE_FIXTURE(FragmentAutocompleteFixture, "fragment_autocomplete_function_statement_with_index_2")
+{
+    ScopedFastFlag _{FFlag::LuauRefactorAutocompleteAncestry, true};
+
+    const std::string source = R"(
+local tbl = { abs = math.abs }
+)";
+
+    const std::string updated = R"(
+local tbl = { abs = math.abs }
+
+function tbl.a@1
+)";
+
+    autocompleteFragmentInNewSolver(
+        source,
+        updated,
+        '1',
+        [](FragmentAutocompleteStatusResult& fragment)
+        {
+            REQUIRE(fragment.result);
+            CHECK(fragment.result->acResults.entryMap.count("abs"));
         }
     );
 }

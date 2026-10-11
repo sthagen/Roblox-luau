@@ -130,7 +130,10 @@ static TypeId shallowClone(TypeId ty, TypeArena& dest, const TxnLog* log)
         {
             ExternType clone{a.name, a.props, a.parent, a.metatable, a.tags, a.userData, a.definitionModuleName, a.definitionLocation, a.indexer};
             if (FFlag::DebugLuauUserDefinedClasses)
+            {
+                clone.isOpen = a.isOpen;
                 clone.relation = a.relation;
+            }
             return dest.addType(std::move(clone));
         }
         else if constexpr (std::is_same_v<T, NegationType>)
@@ -860,6 +863,23 @@ void Substitution::replaceChildren(TypeId ty)
         {
             etv->indexer->indexType = replace(etv->indexer->indexType);
             etv->indexer->indexResultType = replace(etv->indexer->indexResultType);
+        }
+
+        if (FFlag::DebugLuauUserDefinedClasses && etv->relation)
+        {
+            Luau::visit(
+                overloaded{
+                    [&](Obj& obj)
+                    {
+                        obj.ty = replace(obj.ty);
+                    },
+                    [&](Klass& klass)
+                    {
+                        klass.ty = replace(klass.ty);
+                    }
+                },
+                *etv->relation
+            );
         }
     }
     else if (NegationType* ntv = getMutable<NegationType>(ty))

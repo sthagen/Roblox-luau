@@ -31,11 +31,8 @@ LUAU_FASTFLAG(LuauIntegerType2)
 LUAU_FASTFLAGVARIABLE(LuauTypeFunctionSupportsFrozen)
 LUAU_FASTFLAGVARIABLE(LuauTypeFunctionStructuredErrors)
 LUAU_FASTFLAGVARIABLE(LuauTypeFunctionSerializeArgNames)
-LUAU_FASTFLAGVARIABLE(LuauUdtfErrorHandling)
-LUAU_FASTFLAGVARIABLE(LuauUdtfCreateSingletonFixErrorMessage)
-LUAU_FASTFLAGVARIABLE(LuauUdtfTypeUseTaggedMetatable)
-LUAU_FASTFLAGVARIABLE(LuauUdtfTypeToStringMetamethod)
 LUAU_FASTFLAGVARIABLE(LuauUdtfFixTypeNameTypo)
+LUAU_FASTFLAGVARIABLE(LuauUdtfTerseChunkNames)
 
 namespace Luau
 {
@@ -134,9 +131,21 @@ std::optional<std::string> TypeFunctionRuntime::registerFunction_DEPRECATED(AstS
     lua_setreadonly(L, -1, true);
     lua_pop(L, 1);
 
-    // Load bytecode into Luau state
-    if (auto error = checkResultForError_DEPRECATED(L, name.value, luau_load(L, name.value, bytecode.data(), bytecode.size(), 0)))
-        return error;
+    if (FFlag::LuauUdtfTerseChunkNames)
+    {
+        std::string chunkName = name.value;
+        chunkName.insert(0, "="); // in error messages, replaces the source location being `[string "name"]` with just `name`
+
+        // Load bytecode into Luau state
+        if (auto error = checkResultForError_DEPRECATED(L, name.value, luau_load(L, chunkName.c_str(), bytecode.data(), bytecode.size(), 0)))
+            return error;
+    }
+    else
+    {
+        // Load bytecode into Luau state
+        if (auto error = checkResultForError_DEPRECATED(L, name.value, luau_load(L, name.value, bytecode.data(), bytecode.size(), 0)))
+            return error;
+    }
 
     // Execute the global function which should return our user-defined type function
     if (auto error = checkResultForError_DEPRECATED(L, name.value, lua_resume(L, nullptr, 0)))
@@ -220,9 +229,21 @@ std::optional<TypeFunctionError> TypeFunctionRuntime::registerFunction(AstStatTy
     lua_setreadonly(L, -1, true);
     lua_pop(L, 1);
 
-    // Load bytecode into Luau state
-    if (auto error = checkResultForError(L, name.value, luau_load(L, name.value, bytecode.data(), bytecode.size(), 0)))
-        return error;
+    if (FFlag::LuauUdtfTerseChunkNames)
+    {
+        std::string chunkName = name.value;
+        chunkName.insert(0, "="); // in error messages, replaces the source location being `[string "name"]` with just `name`
+
+        // Load bytecode into Luau state
+        if (auto error = checkResultForError(L, name.value, luau_load(L, chunkName.c_str(), bytecode.data(), bytecode.size(), 0)))
+            return error;
+    }
+    else
+    {
+        // Load bytecode into Luau state
+        if (auto error = checkResultForError(L, name.value, luau_load(L, name.value, bytecode.data(), bytecode.size(), 0)))
+            return error;
+    }
 
     // Execute the global function which should return our user-defined type function
     if (auto error = checkResultForError(L, name.value, lua_resume(L, nullptr, 0)))
@@ -2121,25 +2142,12 @@ void setTypeFunctionEnvironment(lua_State* L)
     luaopen_base(L);
     lua_pop(L, 1);
 
-    if (FFlag::LuauUdtfErrorHandling)
+    // Remove certain global functions from the base library
+    static const char* unavailableGlobals[] = {"gcinfo", "getfenv", "newproxy", "setfenv"};
+    for (auto& name : unavailableGlobals)
     {
-        // Remove certain global functions from the base library
-        static const char* unavailableGlobals[] = {"gcinfo", "getfenv", "newproxy", "setfenv"};
-        for (auto& name : unavailableGlobals)
-        {
-            lua_pushcfunction(L, unsupportedFunction, name);
-            lua_setglobal(L, name);
-        }
-    }
-    else
-    {
-        // Remove certain global functions from the base library
-        static const char* unavailableGlobals[] = {"gcinfo", "getfenv", "newproxy", "setfenv", "pcall", "xpcall"};
-        for (auto& name : unavailableGlobals)
-        {
-            lua_pushcfunction(L, unsupportedFunction, name);
-            lua_setglobal(L, name);
-        }
+        lua_pushcfunction(L, unsupportedFunction, name);
+        lua_setglobal(L, name);
     }
 
     lua_pushcfunction(L, print, "print");

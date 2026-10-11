@@ -34,7 +34,8 @@ LUAU_FASTFLAG(LuauInstantiateInSubtyping)
 LUAU_FASTFLAG(LuauExportValueSyntax)
 LUAU_FASTFLAG(LuauExportValueTypecheck)
 LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
-LUAU_FASTFLAG(DebugLuauIfLocalAnalysis)
+LUAU_FASTFLAGVARIABLE(LuauDoesCallErrorUnwrapsGroups)
+LUAU_FASTFLAG(LuauExperimentalIfLocalAnalysis)
 
 namespace Luau
 {
@@ -63,7 +64,10 @@ void resetPrintLine()
 
 bool doesCallError(const AstExprCall* call)
 {
-    const AstExprGlobal* global = call->func->as<AstExprGlobal>();
+    // The callee may be wrapped in any number of grouping expressions, as in `(error)("oops")`.
+    const AstExpr* func = FFlag::LuauDoesCallErrorUnwrapsGroups ? unwrapGroup(call->func) : call->func;
+
+    const AstExprGlobal* global = func->as<AstExprGlobal>();
     if (!global)
         return false;
 
@@ -713,7 +717,7 @@ WithPredicate<TypeId> TypeChecker::checkLocalBinding(
     std::optional<TypeId> expectedType
 )
 {
-    LUAU_ASSERT(FFlag::DebugLuauIfLocalAnalysis);
+    LUAU_ASSERT(FFlag::LuauExperimentalIfLocalAnalysis);
     LUAU_ASSERT(local);
 
     TypeId lhs = nullptr;
@@ -739,12 +743,12 @@ WithPredicate<TypeId> TypeChecker::checkLocalBinding(
 ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatIf& statement)
 {
     std::optional<TypeId> expectedType = std::nullopt;
-    if (FFlag::DebugLuauIfLocalAnalysis && statement.conditionLocal && statement.conditionLocal->annotation)
+    if (FFlag::LuauExperimentalIfLocalAnalysis && statement.conditionLocal && statement.conditionLocal->annotation)
         expectedType.emplace(resolveType(scope, *statement.conditionLocal->annotation));
     WithPredicate<TypeId> result = checkExpr(scope, *statement.condition, expectedType);
     ScopePtr thenScope = childScope(scope, statement.thenbody->location);
 
-    if (FFlag::DebugLuauIfLocalAnalysis && statement.conditionLocal != nullptr)
+    if (FFlag::LuauExperimentalIfLocalAnalysis && statement.conditionLocal != nullptr)
     {
         WithPredicate<TypeId> bindingPred = checkLocalBinding(scope, thenScope, statement.conditionLocal, result, expectedType);
         resolve(bindingPred.predicates, thenScope, true);
@@ -1399,7 +1403,9 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatForIn& forin)
 
         Position start = firstValue->location.begin;
         Position end = values[forin.values.size - 1]->location.end;
-        AstExprCall exprCall{Location(start, end), firstValue, arguments, /* self= */ false, AstArray<AstTypeOrPack>{}, Location()};
+        AstExprCall exprCall{
+            Location(start, end), firstValue, arguments, /* self= */ false, /* tableCall= */ false, AstArray<AstTypeOrPack>{}, Location()
+        };
 
         retPack = checkExprPack(scope, exprCall).type;
     }
@@ -3302,13 +3308,13 @@ WithPredicate<TypeId> TypeChecker::checkExpr(const ScopePtr& scope, const AstExp
 WithPredicate<TypeId> TypeChecker::checkExpr(const ScopePtr& scope, const AstExprIfElse& expr, std::optional<TypeId> expectedType)
 {
     std::optional<TypeId> bindingExpectedType = std::nullopt;
-    if (FFlag::DebugLuauIfLocalAnalysis && expr.conditionLocal && expr.conditionLocal->annotation)
+    if (FFlag::LuauExperimentalIfLocalAnalysis && expr.conditionLocal && expr.conditionLocal->annotation)
         bindingExpectedType.emplace(resolveType(scope, *expr.conditionLocal->annotation));
 
     WithPredicate<TypeId> result = checkExpr(scope, *expr.condition, bindingExpectedType);
 
     ScopePtr trueScope = childScope(scope, expr.trueExpr->location);
-    if (FFlag::DebugLuauIfLocalAnalysis && expr.conditionLocal != nullptr)
+    if (FFlag::LuauExperimentalIfLocalAnalysis && expr.conditionLocal != nullptr)
     {
         WithPredicate<TypeId> bindingPred = checkLocalBinding(scope, trueScope, expr.conditionLocal, result, bindingExpectedType);
         resolve(bindingPred.predicates, trueScope, true);

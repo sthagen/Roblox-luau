@@ -457,6 +457,7 @@ public:
         AstExpr* func,
         const AstArray<AstExpr*>& args,
         bool self,
+        bool tableCall,
         const AstArray<AstTypeOrPack>& explicitTypes,
         const Location& argLocation
     );
@@ -470,6 +471,7 @@ public:
     AstArray<AstTypeOrPack> typeArguments;
     AstArray<AstExpr*> args;
     bool self;
+    bool tableCall;
     Location argLocation;
 };
 
@@ -1262,12 +1264,13 @@ class AstTypeTable : public AstType
 public:
     LUAU_RTTI(AstTypeTable)
 
-    AstTypeTable(const Location& location, const AstArray<AstTableProp>& props, AstTableIndexer* indexer = nullptr);
+    AstTypeTable(const Location& location, const AstArray<AstTableProp>& props, AstTableIndexer* indexer = nullptr, bool isExact = false);
 
     void visit(AstVisitor* visitor) override;
 
     AstArray<AstTableProp> props;
     AstTableIndexer* indexer;
+    bool isExact = false;
 };
 
 class AstTypeFunction : public AstType
